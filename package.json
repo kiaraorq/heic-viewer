@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@types/node": "^16.11.6",
-    "builtin-modules": "^5.2.0",
     "esbuild": "0.17.3",
     "obsidian": "latest",
     "typescript": "4.9.5"

@@ -1,0 +1,41 @@
+name: Build and Release Plugin
+
+on:
+  push:
+    tags:
+      - "*" # This tells GitHub to run this script whenever you create a new Release Tag
+
+permissions:
+  contents: write
+  id-token: write      # Required for attestation
+  attestations: write  # Required for attestation
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Generate Artifact Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'main.js'
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            main.js
+            manifest.json

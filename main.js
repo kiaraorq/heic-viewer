@@ -977,48 +977,139 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_heic2any = __toESM(require_heic2any());
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
-  async onload() {
-    this.registerMarkdownPostProcessor(async (element, context) => {
-      const embeds = element.querySelectorAll(".internal-embed");
-      for (let i = 0; i < embeds.length; i++) {
-        const embed = embeds[i];
-        const src = embed.getAttribute("src");
-        if (src && (src.toLowerCase().endsWith(".heic") || src.toLowerCase().endsWith(".heif"))) {
-          await this.processHeicEmbed(embed, src, context.sourcePath);
-        }
-      }
-    });
+  constructor() {
+    super(...arguments);
+    this.blobCache = /* @__PURE__ */ new Map();
   }
-  async processHeicEmbed(embed, src, sourcePath) {
-    const file = this.app.metadataCache.getFirstLinkpathDest(src, sourcePath);
-    if (file instanceof import_obsidian.TFile) {
-      try {
-        embed.empty();
-        embed.createEl("span", { text: "Converting HEIC..." });
-        const arrayBuffer = await this.app.vault.readBinary(file);
-        const blob = new Blob([arrayBuffer]);
-        const conversionResult = await (0, import_heic2any.default)({
-          blob,
-          toType: "image/jpeg",
-          quality: 0.8
-        });
-        const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
-        const url = URL.createObjectURL(resultBlob);
-        const img = document.createElement("img");
-        img.src = url;
-        img.alt = src;
-        img.style.maxWidth = "100%";
-        img.style.borderRadius = "var(--radius-m)";
-        img.onload = () => {
-          URL.revokeObjectURL(url);
-        };
-        embed.empty();
-        embed.appendChild(img);
-      } catch (error) {
-        console.error("Error converting HEIC image:", error);
-        embed.empty();
-        embed.createEl("span", { text: `Error loading HEIC: ${src}. Check console for details.`, cls: "color-error" });
+  async onload() {
+    this.registerInterval(window.setInterval(() => {
+      this.scanDocumentForHEIC();
+    }, 300));
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.cleanupUnusedMemory();
+      })
+    );
+  }
+  scanDocumentForHEIC() {
+    const allEmbeds = document.querySelectorAll(".internal-embed");
+    for (let i = 0; i < allEmbeds.length; i++) {
+      const embed = allEmbeds[i];
+      const src = embed.getAttribute("src");
+      if (src && (src.toLowerCase().endsWith(".heic") || src.toLowerCase().endsWith(".heif"))) {
+        this.processEmbed(embed, src);
       }
     }
+  }
+  async processEmbed(embed, src) {
+    if (embed.getAttribute("data-heic-processed") === "true")
+      return;
+    embed.setAttribute("data-heic-processed", "true");
+    const activeFile = this.app.workspace.getActiveFile();
+    const sourcePath = activeFile ? activeFile.path : "";
+    const file = this.app.metadataCache.getFirstLinkpathDest(src, sourcePath);
+    if (!(file instanceof import_obsidian.TFile))
+      return;
+    embed.childNodes.forEach((child) => {
+      if (child instanceof HTMLElement) {
+        child.style.display = "none";
+      }
+    });
+    if (this.blobCache.has(file.path)) {
+      const url = this.blobCache.get(file.path);
+      this.injectImage(embed, url, src);
+      return;
+    }
+    this.setupLazyLoad(embed, file, src);
+  }
+  setupLazyLoad(embed, file, src) {
+    const placeholder = embed.createEl("div", {
+      text: "Scroll to load HEIC...",
+      cls: "heic-injected",
+      attr: { style: "padding: 2em; text-align: center; border: 1px dashed var(--background-modifier-border); border-radius: var(--radius-m); color: var(--text-muted); cursor: pointer;" }
+    });
+    const observer = new IntersectionObserver((entries, observerInstance) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          observerInstance.unobserve(entry.target);
+          placeholder.setText("Converting HEIC...");
+          this.convertHeic(embed, file, src, placeholder);
+        }
+      });
+    }, { rootMargin: "50px" });
+    observer.observe(placeholder);
+  }
+  async convertHeic(embed, file, src, placeholder) {
+    try {
+      const arrayBuffer = await this.app.vault.readBinary(file);
+      const blob = new Blob([arrayBuffer]);
+      const conversionResult = await (0, import_heic2any.default)({ blob, toType: "image/jpeg", quality: 0.8 });
+      const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
+      const url = URL.createObjectURL(resultBlob);
+      this.blobCache.set(file.path, url);
+      placeholder.remove();
+      this.injectImage(embed, url, src);
+    } catch (error) {
+      placeholder.setText(`Failed to convert ${src}.`);
+      placeholder.style.color = "red";
+      placeholder.style.border = "1px solid red";
+    }
+  }
+  injectImage(embed, url, src) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = src;
+    img.addClass("heic-injected");
+    img.style.maxWidth = "100%";
+    img.style.borderRadius = "var(--radius-m)";
+    img.style.cursor = "zoom-in";
+    img.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      new HeicImageModal(this.app, url).open();
+    });
+    embed.appendChild(img);
+  }
+  cleanupUnusedMemory() {
+    const visibleImages = document.querySelectorAll("img.heic-injected");
+    const activeUrls = /* @__PURE__ */ new Set();
+    visibleImages.forEach((img) => {
+      activeUrls.add(img.src);
+    });
+    for (const [filePath, url] of this.blobCache.entries()) {
+      if (!activeUrls.has(url)) {
+        URL.revokeObjectURL(url);
+        this.blobCache.delete(filePath);
+      }
+    }
+  }
+  onunload() {
+    this.blobCache.forEach((url) => URL.revokeObjectURL(url));
+    this.blobCache.clear();
+  }
+};
+var HeicImageModal = class extends import_obsidian.Modal {
+  constructor(app, imageUrl) {
+    super(app);
+    this.imageUrl = imageUrl;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.style.padding = "0";
+    contentEl.style.display = "flex";
+    contentEl.style.justifyContent = "center";
+    contentEl.style.alignItems = "center";
+    contentEl.style.overflow = "hidden";
+    const img = contentEl.createEl("img");
+    img.src = this.imageUrl;
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "85vh";
+    img.style.objectFit = "contain";
+    img.style.borderRadius = "var(--radius-m)";
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
   }
 };

@@ -978,7 +978,6 @@ var import_obsidian = require("obsidian");
 var import_heic2any = __toESM(require_heic2any());
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
   async onload() {
-    console.log("Loading HEIC Viewer plugin");
     this.registerMarkdownPostProcessor(async (element, context) => {
       const embeds = element.querySelectorAll(".internal-embed");
       for (let i = 0; i < embeds.length; i++) {
@@ -1021,8 +1020,5 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
         embed.createEl("span", { text: `Error loading HEIC: ${src}. Check console for details.`, cls: "color-error" });
       }
     }
-  }
-  onunload() {
-    console.log("Unloading HEIC Viewer plugin");
   }
 };

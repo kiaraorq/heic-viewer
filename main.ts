@@ -3,8 +3,6 @@ import heic2any from 'heic2any';
 
 export default class HeicViewerPlugin extends Plugin {
     async onload() {
-        console.log('Loading HEIC Viewer plugin');
-
         this.registerMarkdownPostProcessor(async (element: HTMLElement, context: MarkdownPostProcessorContext) => {
             // Find Obsidian's native internal embeds (e.g., ![[image.heic]])
             const embeds = element.querySelectorAll('.internal-embed');
@@ -68,9 +66,5 @@ export default class HeicViewerPlugin extends Plugin {
                 embed.createEl('span', { text: `Error loading HEIC: ${src}. Check console for details.`, cls: 'color-error' });
             }
         }
-    }
-
-    onunload() {
-        console.log('Unloading HEIC Viewer plugin');
     }
 }

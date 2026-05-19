@@ -976,20 +976,71 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_heic2any = __toESM(require_heic2any());
+var DEFAULT_SETTINGS = {
+  invertColors: false,
+  blendMode: "none"
+};
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
+    // 🧠 SMART QUEUE (LRU CACHE): Safely holds up to 30 images in RAM 
+    // without ever accidentally deleting the one you are looking at!
     this.blobCache = /* @__PURE__ */ new Map();
+    this.cacheQueue = [];
+    this.MAX_CACHE_SIZE = 30;
   }
   async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new HeicViewerSettingTab(this.app, this));
+    this.styleEl = document.createElement("style");
+    this.styleEl.id = "heic-viewer-styles";
+    this.styleEl.textContent = `
+            .heic-invert { filter: invert(1) hue-rotate(180deg); }
+            .heic-blend-multiply { mix-blend-mode: multiply; } 
+            .heic-blend-screen { mix-blend-mode: screen; }     
+
+            /* Nuke backgrounds on the embed AND the Live Preview wrapper! */
+            .heic-blend-container { 
+                background-color: transparent !important; 
+                background: transparent !important;
+                border: none !important; 
+                box-shadow: none !important; 
+            }
+        `;
+    document.head.appendChild(this.styleEl);
     this.registerInterval(window.setInterval(() => {
       this.scanDocumentForHEIC();
     }, 300));
-    this.registerEvent(
-      this.app.workspace.on("layout-change", () => {
-        this.cleanupUnusedMemory();
-      })
-    );
+  }
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+  async saveSettings() {
+    await this.saveData(this.settings);
+    this.updateVisibleImages();
+  }
+  updateVisibleImages() {
+    const allImages = document.querySelectorAll(".heic-injected");
+    allImages.forEach((img) => {
+      const embed = img.closest(".internal-embed");
+      const cmBlock = img.closest(".cm-embed-block");
+      if (this.settings.invertColors)
+        img.classList.add("heic-invert");
+      else
+        img.classList.remove("heic-invert");
+      img.classList.remove("heic-blend-multiply", "heic-blend-screen");
+      if (embed)
+        embed.classList.remove("heic-blend-container");
+      if (cmBlock)
+        cmBlock.classList.remove("heic-blend-container");
+      if (this.settings.blendMode === "multiply" || this.settings.blendMode === "screen") {
+        img.classList.add(`heic-blend-${this.settings.blendMode}`);
+        if (embed)
+          embed.classList.add("heic-blend-container");
+        if (cmBlock)
+          cmBlock.classList.add("heic-blend-container");
+      }
+    });
   }
   scanDocumentForHEIC() {
     const allEmbeds = document.querySelectorAll(".internal-embed");
@@ -1011,12 +1062,12 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     if (!(file instanceof import_obsidian.TFile))
       return;
     embed.childNodes.forEach((child) => {
-      if (child instanceof HTMLElement) {
+      if (child instanceof HTMLElement)
         child.style.display = "none";
-      }
     });
     if (this.blobCache.has(file.path)) {
       const url = this.blobCache.get(file.path);
+      this.addToCache(file.path, url);
       this.injectImage(embed, url, src);
       return;
     }
@@ -1043,16 +1094,31 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     try {
       const arrayBuffer = await this.app.vault.readBinary(file);
       const blob = new Blob([arrayBuffer]);
-      const conversionResult = await (0, import_heic2any.default)({ blob, toType: "image/jpeg", quality: 0.8 });
+      const conversionResult = await (0, import_heic2any.default)({ blob, toType: "image/png" });
       const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
       const url = URL.createObjectURL(resultBlob);
-      this.blobCache.set(file.path, url);
+      this.addToCache(file.path, url);
       placeholder.remove();
       this.injectImage(embed, url, src);
     } catch (error) {
       placeholder.setText(`Failed to convert ${src}.`);
       placeholder.style.color = "red";
       placeholder.style.border = "1px solid red";
+    }
+  }
+  // 🧠 HELPER: Manages the 30-image limit so we never run out of RAM
+  addToCache(filePath, url) {
+    this.blobCache.set(filePath, url);
+    this.cacheQueue = this.cacheQueue.filter((p) => p !== filePath);
+    this.cacheQueue.push(filePath);
+    if (this.cacheQueue.length > this.MAX_CACHE_SIZE) {
+      const oldest = this.cacheQueue.shift();
+      if (oldest) {
+        const oldUrl = this.blobCache.get(oldest);
+        if (oldUrl)
+          URL.revokeObjectURL(oldUrl);
+        this.blobCache.delete(oldest);
+      }
     }
   }
   injectImage(embed, url, src) {
@@ -1063,35 +1129,54 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     img.style.maxWidth = "100%";
     img.style.borderRadius = "var(--radius-m)";
     img.style.cursor = "zoom-in";
+    if (this.settings.invertColors)
+      img.classList.add("heic-invert");
+    if (this.settings.blendMode === "multiply" || this.settings.blendMode === "screen") {
+      img.classList.add(`heic-blend-${this.settings.blendMode}`);
+      embed.classList.add("heic-blend-container");
+      const cmBlock = embed.closest(".cm-embed-block");
+      if (cmBlock)
+        cmBlock.classList.add("heic-blend-container");
+    }
     img.addEventListener("click", (event) => {
       event.stopPropagation();
       event.preventDefault();
-      new HeicImageModal(this.app, url).open();
+      new HeicImageModal(this.app, url, this.settings).open();
     });
     embed.appendChild(img);
-  }
-  cleanupUnusedMemory() {
-    const visibleImages = document.querySelectorAll("img.heic-injected");
-    const activeUrls = /* @__PURE__ */ new Set();
-    visibleImages.forEach((img) => {
-      activeUrls.add(img.src);
-    });
-    for (const [filePath, url] of this.blobCache.entries()) {
-      if (!activeUrls.has(url)) {
-        URL.revokeObjectURL(url);
-        this.blobCache.delete(filePath);
-      }
-    }
   }
   onunload() {
     this.blobCache.forEach((url) => URL.revokeObjectURL(url));
     this.blobCache.clear();
+    this.cacheQueue = [];
+    if (this.styleEl)
+      this.styleEl.remove();
+  }
+};
+var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "HEIC Viewer Settings" });
+    new import_obsidian.Setting(containerEl).setName("Invert Images Color").setDesc("Inverts the colors of all HEIC images. Great for reading scanned documents.").addToggle((toggle) => toggle.setValue(this.plugin.settings.invertColors).onChange(async (value) => {
+      this.plugin.settings.invertColors = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Blend/Remove Backgrounds").setDesc('Choose how to blend your images. Use "Drop White" for scanned documents, and "Drop Black" to fix iPhone cutouts that imported with black backgrounds.').addDropdown((dropdown) => dropdown.addOption("none", "No Blending").addOption("multiply", "Drop White Backgrounds").addOption("screen", "Drop Black Backgrounds").setValue(this.plugin.settings.blendMode).onChange(async (value) => {
+      this.plugin.settings.blendMode = value;
+      await this.plugin.saveSettings();
+    }));
   }
 };
 var HeicImageModal = class extends import_obsidian.Modal {
-  constructor(app, imageUrl) {
+  constructor(app, imageUrl, settings) {
     super(app);
     this.imageUrl = imageUrl;
+    this.settings = settings;
   }
   onOpen() {
     const { contentEl } = this;
@@ -1101,15 +1186,25 @@ var HeicImageModal = class extends import_obsidian.Modal {
     contentEl.style.justifyContent = "center";
     contentEl.style.alignItems = "center";
     contentEl.style.overflow = "hidden";
+    if (this.settings.blendMode !== "none") {
+      contentEl.classList.add("heic-blend-container");
+    }
     const img = contentEl.createEl("img");
     img.src = this.imageUrl;
+    img.addClass("heic-injected");
     img.style.maxWidth = "100%";
     img.style.maxHeight = "85vh";
     img.style.objectFit = "contain";
     img.style.borderRadius = "var(--radius-m)";
+    if (this.settings.invertColors)
+      img.classList.add("heic-invert");
+    if (this.settings.blendMode === "multiply") {
+      img.classList.add("heic-blend-multiply");
+    } else if (this.settings.blendMode === "screen") {
+      img.classList.add("heic-blend-screen");
+    }
   }
   onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
+    this.contentEl.empty();
   }
 };

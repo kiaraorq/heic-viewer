@@ -1,0 +1,19 @@
+# Node.js dependencies
+node_modules/
+
+# Mac OS folder settings
+.DS_Store
+
+# Editor directories and files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -23,3 +23,6 @@ When you scroll to the image, the plugin will briefly display a "Converting HEIC
 
 ## Limitations
 Because HEIC files use heavy video-compression algorithms, decoding them via WebAssembly takes a moment. Large photos (12MP+) might take a second or two to render when scrolling into view.
+
+[![Support me on Ko-fi](kofi-button-cute.png)](https://ko-fi.com/L7G522XOY8)
+[![Support me on Ko-fi](support_me_on_kofi_beige.png)](https://ko-fi.com/L7G522XOY8)

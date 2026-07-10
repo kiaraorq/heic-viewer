@@ -1,14 +1,53 @@
 import { Plugin, TFile, Modal, App, PluginSettingTab, Setting } from 'obsidian';
-import heic2any from 'heic2any';
+// libheif-js doesn't ship types matching this default-namespace usage, so treat as any.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const libheif: any = require('libheif-js');
+
+type BackgroundMode = 'transparent' | 'black' | 'white' | 'custom';
 
 interface HeicViewerSettings {
     invertColors: boolean;
-    blendMode: string; 
+    blendMode: string;
+    backgroundMode: BackgroundMode;
+    customBackgroundColor: string;
 }
 
 const DEFAULT_SETTINGS: HeicViewerSettings = {
     invertColors: false,
-    blendMode: 'none'
+    blendMode: 'none',
+    backgroundMode: 'transparent',
+    customBackgroundColor: '#161616'
+}
+
+// Returns the actual color to paint behind transparent regions, or null to
+// mean "leave it truly transparent". Shared by the plugin class (for the
+// inline embed) and the modal (which only has a settings object, not the
+// plugin instance) so the two can never drift out of sync.
+function resolveBackgroundColor(settings: HeicViewerSettings): string | null {
+    switch (settings.backgroundMode) {
+        case 'black': return '#000000';
+        case 'white': return '#ffffff';
+        case 'custom': return settings.customBackgroundColor || '#000000';
+        case 'transparent':
+        default:
+            return null;
+    }
+}
+
+// Strips the element's border/shadow (always) and either leaves its
+// background transparent or paints it with the resolved color, using
+// setProperty(..., 'important') so it reliably beats the theme's own
+// !important background rules on the same element.
+function applyBackgroundTreatment(el: HTMLElement, settings: HeicViewerSettings) {
+    el.classList.add('heic-blend-container');
+    el.style.removeProperty('background-color');
+    el.style.removeProperty('background');
+
+    const color = resolveBackgroundColor(settings);
+    if (color) {
+        el.style.setProperty('background-color', color, 'important');
+        el.style.setProperty('background', color, 'important');
+    }
 }
 
 export default class HeicViewerPlugin extends Plugin {
@@ -39,6 +78,25 @@ export default class HeicViewerPlugin extends Plugin {
                 border: none !important; 
                 box-shadow: none !important; 
             }
+
+            /* Make the fullscreen viewer actually take over the whole screen,
+               instead of Obsidian's default centered, size-limited dialog box. */
+            .heic-fullscreen-modal {
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: 100vw !important;
+                max-height: 100vh !important;
+                top: 0 !important;
+                left: 0 !important;
+                margin: 0 !important;
+                border-radius: 0 !important;
+                padding: 0 !important;
+            }
+            .heic-fullscreen-content {
+                width: 100%;
+                height: 100%;
+                touch-action: none; /* we handle pinch/pan ourselves */
+            }
         `;
         document.head.appendChild(this.styleEl);
 
@@ -48,7 +106,15 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const loadedData: any = await this.loadData();
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+
+        // Migrate users coming from the old on/off "Dark Background" toggle:
+        // on -> approximate with 'black', off -> 'transparent' (the new default).
+        if (loadedData && typeof loadedData.darkBackground === 'boolean' && !loadedData.backgroundMode) {
+            this.settings.backgroundMode = loadedData.darkBackground ? 'black' : 'transparent';
+            await this.saveData(this.settings);
+        }
     }
 
     async saveSettings() {
@@ -59,23 +125,26 @@ export default class HeicViewerPlugin extends Plugin {
     updateVisibleImages() {
         const allImages = document.querySelectorAll('.heic-injected');
         allImages.forEach(img => {
-            const embed = img.closest('.internal-embed');
-            const cmBlock = img.closest('.cm-embed-block'); // Find the Live Preview wrapper
+            const embed = img.closest('.internal-embed') as HTMLElement | null;
+            const cmBlock = img.closest('.cm-embed-block') as HTMLElement | null; // Live Preview wrapper
 
             // Invert
             if (this.settings.invertColors) img.classList.add('heic-invert');
             else img.classList.remove('heic-invert');
 
-            // Reset Blends
+            // Reset Blend filters (these only affect the <img> itself)
             img.classList.remove('heic-blend-multiply', 'heic-blend-screen');
-            if (embed) embed.classList.remove('heic-blend-container');
-            if (cmBlock) cmBlock.classList.remove('heic-blend-container');
 
-            // Apply Blends & Strip Backgrounds
+            // ALWAYS apply a deliberate background treatment — transparent, black,
+            // white, or a custom color — so any real transparency in the converted
+            // PNG is handled on purpose rather than showing whatever color the
+            // theme happens to use.
+            if (embed) applyBackgroundTreatment(embed, this.settings);
+            if (cmBlock) applyBackgroundTreatment(cmBlock, this.settings);
+
+            // Apply Blends (color-remapping filters), separate from background stripping
             if (this.settings.blendMode === 'multiply' || this.settings.blendMode === 'screen') {
                 img.classList.add(`heic-blend-${this.settings.blendMode}`);
-                if (embed) embed.classList.add('heic-blend-container');
-                if (cmBlock) cmBlock.classList.add('heic-blend-container');
             }
         });
     }
@@ -140,10 +209,42 @@ export default class HeicViewerPlugin extends Plugin {
     async convertHeic(embed: HTMLElement, file: TFile, src: string, placeholder: HTMLElement) {
         try {
             const arrayBuffer = await this.app.vault.readBinary(file);
-            const blob = new Blob([arrayBuffer]);
-            
-            const conversionResult = await heic2any({ blob, toType: "image/png" });
-            const resultBlob = Array.isArray(conversionResult) ? conversionResult[0] : conversionResult;
+
+            const decoder = new libheif.HeifDecoder();
+            const images = decoder.decode(arrayBuffer);
+            if (!images || !images.length) {
+                throw new Error('ERR_LIBHEIF no images found in file');
+            }
+            const image = images[0];
+            const width = image.get_width();
+            const height = image.get_height();
+
+            // Start from a zero-initialized buffer (fully transparent black), not
+            // preset-opaque. display() fully overwrites every pixel -- including
+            // alpha -- with the real decoded values, so this doesn't matter for
+            // correctness, but starting transparent avoids ever showing a stray
+            // opaque pixel if a future libheif build behaves differently.
+            const imageData: ImageData = await new Promise((resolve, reject) => {
+                image.display(new ImageData(width, height), (result: ImageData | null) => {
+                    if (!result) return reject(new Error('ERR_LIBHEIF display() failed'));
+                    resolve(result);
+                });
+            });
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('ERR_CANVAS could not get 2d context');
+            ctx.putImageData(imageData, 0, 0);
+
+            const resultBlob: Blob = await new Promise((resolve, reject) => {
+                canvas.toBlob((blob) => {
+                    if (!blob) return reject(new Error('ERR_CANVAS toBlob failed'));
+                    resolve(blob);
+                }, 'image/png');
+            });
+
             const url = URL.createObjectURL(resultBlob);
 
             this.addToCache(file.path, url); // Add to our Smart Queue
@@ -152,7 +253,8 @@ export default class HeicViewerPlugin extends Plugin {
             this.injectImage(embed, url, src);
 
         } catch (error: any) {
-            placeholder.setText(`Failed to convert ${src}.`);
+            const detail = error && error.message ? error.message : String(error);
+            placeholder.setText(`Failed to convert ${src}: ${detail}`);
             placeholder.style.color = 'red';
             placeholder.style.border = '1px solid red';
         }
@@ -188,14 +290,17 @@ export default class HeicViewerPlugin extends Plugin {
         
         // Apply initial settings
         if (this.settings.invertColors) img.classList.add('heic-invert');
-        
+
+        // ALWAYS apply a deliberate background treatment (transparent, black,
+        // white, or custom) — otherwise a genuinely transparent PNG (from a HEIC
+        // with an alpha channel) just shows whatever color the theme puts behind
+        // the embed.
+        applyBackgroundTreatment(embed, this.settings);
+        const cmBlock = embed.closest('.cm-embed-block') as HTMLElement | null;
+        if (cmBlock) applyBackgroundTreatment(cmBlock, this.settings);
+
         if (this.settings.blendMode === 'multiply' || this.settings.blendMode === 'screen') {
             img.classList.add(`heic-blend-${this.settings.blendMode}`);
-            embed.classList.add('heic-blend-container');
-            
-            // 🚀 STRIP LIVE PREVIEW WRAPPER BACKGROUND
-            const cmBlock = embed.closest('.cm-embed-block');
-            if (cmBlock) cmBlock.classList.add('heic-blend-container');
         }
         
         img.addEventListener('click', (event) => {
@@ -251,12 +356,53 @@ class HeicViewerSettingTab extends PluginSettingTab {
                     this.plugin.settings.blendMode = value;
                     await this.plugin.saveSettings();
                 }));
+
+        new Setting(containerEl)
+            .setName('Background Behind Transparency')
+            .setDesc('Some HEIC images have a genuinely transparent background. Choose how to treat that: leave it fully transparent (default), fill it with black or white, or pick any custom color.')
+            .addDropdown(dropdown => dropdown
+                .addOption('transparent', 'Transparent (default)')
+                .addOption('black', 'Black')
+                .addOption('white', 'White')
+                .addOption('custom', 'Custom color')
+                .setValue(this.plugin.settings.backgroundMode)
+                .onChange(async (value) => {
+                    this.plugin.settings.backgroundMode = value as BackgroundMode;
+                    await this.plugin.saveSettings();
+                    this.display(); // re-render so the color picker appears/disappears as needed
+                }));
+
+        if (this.plugin.settings.backgroundMode === 'custom') {
+            new Setting(containerEl)
+                .setName('Custom Background Color')
+                .setDesc('Pick any color to fill transparent regions with.')
+                .addColorPicker(picker => picker
+                    .setValue(this.plugin.settings.customBackgroundColor)
+                    .onChange(async (value) => {
+                        this.plugin.settings.customBackgroundColor = value;
+                        await this.plugin.saveSettings();
+                    }));
+        }
     }
 }
 
 class HeicImageModal extends Modal {
     imageUrl: string;
     settings: HeicViewerSettings;
+    private imgEl: HTMLImageElement;
+
+    // Zoom/pan state
+    private scale = 1;
+    private offsetX = 0;
+    private offsetY = 0;
+    private isDragging = false;
+    private dragStartX = 0;
+    private dragStartY = 0;
+    private lastTouchDistance = 0;
+    private singleTouchStart = { x: 0, y: 0, offsetX: 0, offsetY: 0 };
+
+    private readonly MIN_SCALE = 1;
+    private readonly MAX_SCALE = 6;
 
     constructor(app: App, imageUrl: string, settings: HeicViewerSettings) {
         super(app);
@@ -265,26 +411,34 @@ class HeicImageModal extends Modal {
     }
 
     onOpen() {
-        const { contentEl } = this;
-        
+        const { contentEl, modalEl } = this;
+
+        // Take over the whole screen instead of Obsidian's default centered dialog.
+        modalEl.addClass('heic-fullscreen-modal');
+
         contentEl.empty();
+        contentEl.addClass('heic-fullscreen-content');
         contentEl.style.padding = '0';
         contentEl.style.display = 'flex';
         contentEl.style.justifyContent = 'center';
         contentEl.style.alignItems = 'center';
         contentEl.style.overflow = 'hidden';
+        contentEl.style.cursor = 'grab';
 
-        if (this.settings.blendMode !== 'none') {
-            contentEl.classList.add('heic-blend-container');
-        }
+        // ALWAYS apply a deliberate background treatment, same choice as the inline embed.
+        applyBackgroundTreatment(contentEl, this.settings);
 
         const img = contentEl.createEl('img');
+        this.imgEl = img;
         img.src = this.imageUrl;
         img.addClass('heic-injected'); 
         img.style.maxWidth = '100%';
-        img.style.maxHeight = '85vh'; 
+        img.style.maxHeight = '100%';
         img.style.objectFit = 'contain';
         img.style.borderRadius = 'var(--radius-m)';
+        img.style.transformOrigin = 'center center';
+        img.style.userSelect = 'none';
+        img.draggable = false;
 
         if (this.settings.invertColors) img.classList.add('heic-invert');
         
@@ -293,9 +447,123 @@ class HeicImageModal extends Modal {
         } else if (this.settings.blendMode === 'screen') {
             img.classList.add('heic-blend-screen');
         }
+
+        this.setupZoomAndPan(contentEl);
+    }
+
+    private applyTransform() {
+        this.imgEl.style.transform = `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`;
+    }
+
+    private clampScale(scale: number): number {
+        return Math.min(this.MAX_SCALE, Math.max(this.MIN_SCALE, scale));
+    }
+
+    private resetZoom() {
+        this.scale = this.MIN_SCALE;
+        this.offsetX = 0;
+        this.offsetY = 0;
+        this.applyTransform();
+    }
+
+    private setupZoomAndPan(container: HTMLElement) {
+        // --- Mouse wheel zoom (desktop / trackpad) ---
+        container.addEventListener('wheel', (event: WheelEvent) => {
+            event.preventDefault();
+            const delta = -event.deltaY * 0.0015;
+            const newScale = this.clampScale(this.scale + this.scale * delta);
+            if (newScale === this.scale) return;
+            this.scale = newScale;
+            if (this.scale === this.MIN_SCALE) {
+                this.offsetX = 0;
+                this.offsetY = 0;
+            }
+            this.applyTransform();
+        }, { passive: false });
+
+        // --- Double-click to toggle zoom (desktop) ---
+        container.addEventListener('dblclick', (event: MouseEvent) => {
+            event.preventDefault();
+            if (this.scale > this.MIN_SCALE) {
+                this.resetZoom();
+            } else {
+                this.scale = this.clampScale(3);
+                this.applyTransform();
+            }
+        });
+
+        // --- Mouse drag to pan (desktop), only meaningful once zoomed in ---
+        container.addEventListener('mousedown', (event: MouseEvent) => {
+            if (this.scale <= this.MIN_SCALE) return;
+            this.isDragging = true;
+            this.dragStartX = event.clientX - this.offsetX;
+            this.dragStartY = event.clientY - this.offsetY;
+            container.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', this.onMouseMove);
+        window.addEventListener('mouseup', this.onMouseUp);
+
+        // --- Touch: two-finger pinch to zoom, one-finger drag to pan (mobile) ---
+        container.addEventListener('touchstart', (event: TouchEvent) => {
+            if (event.touches.length === 2) {
+                this.lastTouchDistance = this.getTouchDistance(event.touches);
+            } else if (event.touches.length === 1 && this.scale > this.MIN_SCALE) {
+                const touch = event.touches[0];
+                this.singleTouchStart = { x: touch.clientX, y: touch.clientY, offsetX: this.offsetX, offsetY: this.offsetY };
+            }
+        }, { passive: true });
+
+        container.addEventListener('touchmove', (event: TouchEvent) => {
+            if (event.touches.length === 2) {
+                event.preventDefault();
+                const distance = this.getTouchDistance(event.touches);
+                if (this.lastTouchDistance > 0) {
+                    const ratio = distance / this.lastTouchDistance;
+                    this.scale = this.clampScale(this.scale * ratio);
+                    this.applyTransform();
+                }
+                this.lastTouchDistance = distance;
+            } else if (event.touches.length === 1 && this.scale > this.MIN_SCALE) {
+                event.preventDefault();
+                const touch = event.touches[0];
+                this.offsetX = this.singleTouchStart.offsetX + (touch.clientX - this.singleTouchStart.x);
+                this.offsetY = this.singleTouchStart.offsetY + (touch.clientY - this.singleTouchStart.y);
+                this.applyTransform();
+            }
+        }, { passive: false });
+
+        container.addEventListener('touchend', () => {
+            this.lastTouchDistance = 0;
+            if (this.scale === this.MIN_SCALE) {
+                this.offsetX = 0;
+                this.offsetY = 0;
+                this.applyTransform();
+            }
+        });
+    }
+
+    private onMouseMove = (event: MouseEvent) => {
+        if (!this.isDragging) return;
+        this.offsetX = event.clientX - this.dragStartX;
+        this.offsetY = event.clientY - this.dragStartY;
+        this.applyTransform();
+    };
+
+    private onMouseUp = () => {
+        if (!this.isDragging) return;
+        this.isDragging = false;
+        this.contentEl.style.cursor = 'grab';
+    };
+
+    private getTouchDistance(touches: TouchList): number {
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        return Math.sqrt(dx * dx + dy * dy);
     }
 
     onClose() {
+        window.removeEventListener('mousemove', this.onMouseMove);
+        window.removeEventListener('mouseup', this.onMouseUp);
         this.contentEl.empty();
     }
 }

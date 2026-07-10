@@ -1,7 +1,5 @@
 import { Plugin, TFile, Modal, App, PluginSettingTab, Setting } from 'obsidian';
-// libheif-js doesn't ship types matching this default-namespace usage, so treat as any.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const libheif: any = require('libheif-js');
+import { HeifDecoder, HeifImage } from 'libheif-js';
 
 type BackgroundMode = 'transparent' | 'black' | 'white' | 'custom';
 
@@ -10,6 +8,12 @@ interface HeicViewerSettings {
     blendMode: string;
     backgroundMode: BackgroundMode;
     customBackgroundColor: string;
+}
+
+// Shape of whatever might already be saved on disk from older plugin versions,
+// so migration code has real types instead of `any`.
+interface LegacyHeicViewerData extends Partial<HeicViewerSettings> {
+    darkBackground?: boolean;
 }
 
 const DEFAULT_SETTINGS: HeicViewerSettings = {
@@ -34,25 +38,33 @@ function resolveBackgroundColor(settings: HeicViewerSettings): string | null {
     }
 }
 
-// Strips the element's border/shadow (always) and either leaves its
-// background transparent or paints it with the resolved color, using
-// setProperty(..., 'important') so it reliably beats the theme's own
-// !important background rules on the same element.
+// Always strips border/shadow and gives a deliberate background treatment
+// (transparent, black, white, or custom) via CSS classes defined in
+// styles.css. A custom color is passed through as a CSS custom property
+// (setCssProps) since its value is only known at runtime.
 function applyBackgroundTreatment(el: HTMLElement, settings: HeicViewerSettings) {
     el.classList.add('heic-blend-container');
-    el.style.removeProperty('background-color');
-    el.style.removeProperty('background');
+    el.classList.remove('heic-bg-black', 'heic-bg-white', 'heic-bg-custom');
 
-    const color = resolveBackgroundColor(settings);
-    if (color) {
-        el.style.setProperty('background-color', color, 'important');
-        el.style.setProperty('background', color, 'important');
+    switch (settings.backgroundMode) {
+        case 'black':
+            el.classList.add('heic-bg-black');
+            break;
+        case 'white':
+            el.classList.add('heic-bg-white');
+            break;
+        case 'custom':
+            el.classList.add('heic-bg-custom');
+            el.setCssProps({ '--heic-custom-bg-color': settings.customBackgroundColor || '#161616' });
+            break;
+        case 'transparent':
+        default:
+            break; // heic-blend-container alone already gives true transparency
     }
 }
 
 export default class HeicViewerPlugin extends Plugin {
-    settings: HeicViewerSettings;
-    private styleEl: HTMLStyleElement;
+    settings!: HeicViewerSettings;
 
     // 🧠 SMART QUEUE (LRU CACHE): Safely holds up to 30 images in RAM 
     // without ever accidentally deleting the one you are looking at!
@@ -64,49 +76,13 @@ export default class HeicViewerPlugin extends Plugin {
         await this.loadSettings();
         this.addSettingTab(new HeicViewerSettingTab(this.app, this));
 
-        this.styleEl = document.createElement('style');
-        this.styleEl.id = 'heic-viewer-styles';
-        this.styleEl.textContent = `
-            .heic-invert { filter: invert(1) hue-rotate(180deg); }
-            .heic-blend-multiply { mix-blend-mode: multiply; } 
-            .heic-blend-screen { mix-blend-mode: screen; }     
-
-            /* Nuke backgrounds on the embed AND the Live Preview wrapper! */
-            .heic-blend-container { 
-                background-color: transparent !important; 
-                background: transparent !important;
-                border: none !important; 
-                box-shadow: none !important; 
-            }
-
-            /* Make the fullscreen viewer actually take over the whole screen,
-               instead of Obsidian's default centered, size-limited dialog box. */
-            .heic-fullscreen-modal {
-                width: 100vw !important;
-                height: 100vh !important;
-                max-width: 100vw !important;
-                max-height: 100vh !important;
-                top: 0 !important;
-                left: 0 !important;
-                margin: 0 !important;
-                border-radius: 0 !important;
-                padding: 0 !important;
-            }
-            .heic-fullscreen-content {
-                width: 100%;
-                height: 100%;
-                touch-action: none; /* we handle pinch/pan ourselves */
-            }
-        `;
-        document.head.appendChild(this.styleEl);
-
         this.registerInterval(window.setInterval(() => {
             this.scanDocumentForHEIC();
         }, 300));
     }
 
     async loadSettings() {
-        const loadedData: any = await this.loadData();
+        const loadedData: LegacyHeicViewerData | null = await this.loadData();
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 
         // Migrate users coming from the old on/off "Dark Background" toggle:
@@ -123,7 +99,7 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     updateVisibleImages() {
-        const allImages = document.querySelectorAll('.heic-injected');
+        const allImages = activeDocument.querySelectorAll('.heic-injected');
         allImages.forEach(img => {
             const embed = img.closest('.internal-embed') as HTMLElement | null;
             const cmBlock = img.closest('.cm-embed-block') as HTMLElement | null; // Live Preview wrapper
@@ -150,13 +126,13 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     scanDocumentForHEIC() {
-        const allEmbeds = document.querySelectorAll('.internal-embed');
+        const allEmbeds = activeDocument.querySelectorAll('.internal-embed');
         for (let i = 0; i < allEmbeds.length; i++) {
             const embed = allEmbeds[i] as HTMLElement;
             const src = embed.getAttribute('src');
             
             if (src && (src.toLowerCase().endsWith('.heic') || src.toLowerCase().endsWith('.heif'))) {
-                this.processEmbed(embed, src); 
+                void this.processEmbed(embed, src);
             }
         }
     }
@@ -172,7 +148,7 @@ export default class HeicViewerPlugin extends Plugin {
         if (!(file instanceof TFile)) return;
 
         embed.childNodes.forEach(child => {
-            if (child instanceof HTMLElement) child.style.display = 'none';
+            if (child.instanceOf(HTMLElement)) child.addClass('heic-hidden-embed-child');
         });
 
         // FAST LOAD: Check our Smart Queue
@@ -187,10 +163,9 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     setupLazyLoad(embed: HTMLElement, file: TFile, src: string) {
-        const placeholder = embed.createEl('div', { 
+        const placeholder = embed.createEl('div', {
             text: 'Scroll to load HEIC...',
-            cls: 'heic-injected', 
-            attr: { style: 'padding: 2em; text-align: center; border: 1px dashed var(--background-modifier-border); border-radius: var(--radius-m); color: var(--text-muted); cursor: pointer;' }
+            cls: 'heic-injected heic-placeholder'
         });
 
         const observer = new IntersectionObserver((entries, observerInstance) => {
@@ -198,7 +173,7 @@ export default class HeicViewerPlugin extends Plugin {
                 if (entry.isIntersecting) {
                     observerInstance.unobserve(entry.target);
                     placeholder.setText('Converting HEIC...');
-                    this.convertHeic(embed, file, src, placeholder);
+                    void this.convertHeic(embed, file, src, placeholder);
                 }
             });
         }, { rootMargin: "50px" });
@@ -210,12 +185,12 @@ export default class HeicViewerPlugin extends Plugin {
         try {
             const arrayBuffer = await this.app.vault.readBinary(file);
 
-            const decoder = new libheif.HeifDecoder();
+            const decoder = new HeifDecoder();
             const images = decoder.decode(arrayBuffer);
             if (!images || !images.length) {
                 throw new Error('ERR_LIBHEIF no images found in file');
             }
-            const image = images[0];
+            const image: HeifImage = images[0];
             const width = image.get_width();
             const height = image.get_height();
 
@@ -231,7 +206,7 @@ export default class HeicViewerPlugin extends Plugin {
                 });
             });
 
-            const canvas = document.createElement('canvas');
+            const canvas = activeDocument.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext('2d');
@@ -252,11 +227,10 @@ export default class HeicViewerPlugin extends Plugin {
             placeholder.remove();
             this.injectImage(embed, url, src);
 
-        } catch (error: any) {
-            const detail = error && error.message ? error.message : String(error);
+        } catch (error: unknown) {
+            const detail = error instanceof Error ? error.message : String(error);
             placeholder.setText(`Failed to convert ${src}: ${detail}`);
-            placeholder.style.color = 'red';
-            placeholder.style.border = '1px solid red';
+            placeholder.addClass('heic-placeholder-error');
         }
     }
 
@@ -280,14 +254,11 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     injectImage(embed: HTMLElement, url: string, src: string) {
-        const img = document.createElement('img');
+        const img = activeDocument.createElement('img');
         img.src = url;
         img.alt = src;
         img.addClass('heic-injected');
-        img.style.maxWidth = '100%';
-        img.style.borderRadius = 'var(--radius-m)';
-        img.style.cursor = 'zoom-in'; 
-        
+
         // Apply initial settings
         if (this.settings.invertColors) img.classList.add('heic-invert');
 
@@ -316,7 +287,6 @@ export default class HeicViewerPlugin extends Plugin {
         this.blobCache.forEach(url => URL.revokeObjectURL(url));
         this.blobCache.clear();
         this.cacheQueue = [];
-        if (this.styleEl) this.styleEl.remove(); 
     }
 }
 
@@ -332,7 +302,7 @@ class HeicViewerSettingTab extends PluginSettingTab {
         const {containerEl} = this;
         containerEl.empty();
 
-        containerEl.createEl('h2', {text: 'HEIC Viewer Settings'});
+        new Setting(containerEl).setName('HEIC Viewer Settings').setHeading();
 
         new Setting(containerEl)
             .setName('Invert Images Color')
@@ -348,7 +318,7 @@ class HeicViewerSettingTab extends PluginSettingTab {
             .setName('Blend/Remove Backgrounds')
             .setDesc('Choose how to blend your images. Use "Drop White" for scanned documents, and "Drop Black" to fix iPhone cutouts that imported with black backgrounds.')
             .addDropdown(dropdown => dropdown
-                .addOption('none', 'No Blending')
+                .addOption('none', 'No Blending (default)')
                 .addOption('multiply', 'Drop White Backgrounds')
                 .addOption('screen', 'Drop Black Backgrounds')
                 .setValue(this.plugin.settings.blendMode)
@@ -389,7 +359,7 @@ class HeicViewerSettingTab extends PluginSettingTab {
 class HeicImageModal extends Modal {
     imageUrl: string;
     settings: HeicViewerSettings;
-    private imgEl: HTMLImageElement;
+    private imgEl!: HTMLImageElement;
 
     // Zoom/pan state
     private scale = 1;
@@ -418,12 +388,6 @@ class HeicImageModal extends Modal {
 
         contentEl.empty();
         contentEl.addClass('heic-fullscreen-content');
-        contentEl.style.padding = '0';
-        contentEl.style.display = 'flex';
-        contentEl.style.justifyContent = 'center';
-        contentEl.style.alignItems = 'center';
-        contentEl.style.overflow = 'hidden';
-        contentEl.style.cursor = 'grab';
 
         // ALWAYS apply a deliberate background treatment, same choice as the inline embed.
         applyBackgroundTreatment(contentEl, this.settings);
@@ -431,13 +395,7 @@ class HeicImageModal extends Modal {
         const img = contentEl.createEl('img');
         this.imgEl = img;
         img.src = this.imageUrl;
-        img.addClass('heic-injected'); 
-        img.style.maxWidth = '100%';
-        img.style.maxHeight = '100%';
-        img.style.objectFit = 'contain';
-        img.style.borderRadius = 'var(--radius-m)';
-        img.style.transformOrigin = 'center center';
-        img.style.userSelect = 'none';
+        img.addClass('heic-injected', 'heic-fullscreen-image');
         img.draggable = false;
 
         if (this.settings.invertColors) img.classList.add('heic-invert');
@@ -452,7 +410,9 @@ class HeicImageModal extends Modal {
     }
 
     private applyTransform() {
-        this.imgEl.style.transform = `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`;
+        this.imgEl.setCssStyles({
+            transform: `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`
+        });
     }
 
     private clampScale(scale: number): number {
@@ -498,7 +458,7 @@ class HeicImageModal extends Modal {
             this.isDragging = true;
             this.dragStartX = event.clientX - this.offsetX;
             this.dragStartY = event.clientY - this.offsetY;
-            container.style.cursor = 'grabbing';
+            container.addClass('heic-dragging');
         });
         window.addEventListener('mousemove', this.onMouseMove);
         window.addEventListener('mouseup', this.onMouseUp);
@@ -552,7 +512,7 @@ class HeicImageModal extends Modal {
     private onMouseUp = () => {
         if (!this.isDragging) return;
         this.isDragging = false;
-        this.contentEl.style.cursor = 'grab';
+        this.contentEl.removeClass('heic-dragging');
     };
 
     private getTouchDistance(touches: TouchList): number {

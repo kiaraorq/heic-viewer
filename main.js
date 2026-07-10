@@ -1,6 +1,8 @@
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
@@ -17,12 +19,20 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // node_modules/libheif-js/libheif/libheif.js
 var require_libheif = __commonJS({
   "node_modules/libheif-js/libheif/libheif.js"(exports, module2) {
-    var libheif2 = (() => {
+    var libheif = (() => {
       var Ck;
       var Jr = typeof document != "undefined" ? (Ck = document.currentScript) == null ? void 0 : Ck.src : void 0;
       return typeof __filename != "undefined" && (Jr || (Jr = __filename)), function(wu = {}) {
@@ -72771,7 +72781,7 @@ var require_libheif = __commonJS({
         return Vk = K, Vk;
       };
     })();
-    typeof exports == "object" && typeof module2 == "object" ? module2.exports = libheif2 : typeof define == "function" && define.amd && define([], () => libheif2);
+    typeof exports == "object" && typeof module2 == "object" ? module2.exports = libheif : typeof define == "function" && define.amd && define([], () => libheif);
   }
 });
 
@@ -72789,34 +72799,30 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var libheif = require_libheif_js();
+var import_libheif_js = __toESM(require_libheif_js());
 var DEFAULT_SETTINGS = {
   invertColors: false,
   blendMode: "none",
   backgroundMode: "transparent",
   customBackgroundColor: "#161616"
 };
-function resolveBackgroundColor(settings) {
-  switch (settings.backgroundMode) {
-    case "black":
-      return "#000000";
-    case "white":
-      return "#ffffff";
-    case "custom":
-      return settings.customBackgroundColor || "#000000";
-    case "transparent":
-    default:
-      return null;
-  }
-}
 function applyBackgroundTreatment(el, settings) {
   el.classList.add("heic-blend-container");
-  el.style.removeProperty("background-color");
-  el.style.removeProperty("background");
-  const color = resolveBackgroundColor(settings);
-  if (color) {
-    el.style.setProperty("background-color", color, "important");
-    el.style.setProperty("background", color, "important");
+  el.classList.remove("heic-bg-black", "heic-bg-white", "heic-bg-custom");
+  switch (settings.backgroundMode) {
+    case "black":
+      el.classList.add("heic-bg-black");
+      break;
+    case "white":
+      el.classList.add("heic-bg-white");
+      break;
+    case "custom":
+      el.classList.add("heic-bg-custom");
+      el.setCssProps({ "--heic-custom-bg-color": settings.customBackgroundColor || "#161616" });
+      break;
+    case "transparent":
+    default:
+      break;
   }
 }
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
@@ -72831,41 +72837,6 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new HeicViewerSettingTab(this.app, this));
-    this.styleEl = document.createElement("style");
-    this.styleEl.id = "heic-viewer-styles";
-    this.styleEl.textContent = `
-            .heic-invert { filter: invert(1) hue-rotate(180deg); }
-            .heic-blend-multiply { mix-blend-mode: multiply; } 
-            .heic-blend-screen { mix-blend-mode: screen; }     
-
-            /* Nuke backgrounds on the embed AND the Live Preview wrapper! */
-            .heic-blend-container { 
-                background-color: transparent !important; 
-                background: transparent !important;
-                border: none !important; 
-                box-shadow: none !important; 
-            }
-
-            /* Make the fullscreen viewer actually take over the whole screen,
-               instead of Obsidian's default centered, size-limited dialog box. */
-            .heic-fullscreen-modal {
-                width: 100vw !important;
-                height: 100vh !important;
-                max-width: 100vw !important;
-                max-height: 100vh !important;
-                top: 0 !important;
-                left: 0 !important;
-                margin: 0 !important;
-                border-radius: 0 !important;
-                padding: 0 !important;
-            }
-            .heic-fullscreen-content {
-                width: 100%;
-                height: 100%;
-                touch-action: none; /* we handle pinch/pan ourselves */
-            }
-        `;
-    document.head.appendChild(this.styleEl);
     this.registerInterval(window.setInterval(() => {
       this.scanDocumentForHEIC();
     }, 300));
@@ -72883,7 +72854,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     this.updateVisibleImages();
   }
   updateVisibleImages() {
-    const allImages = document.querySelectorAll(".heic-injected");
+    const allImages = activeDocument.querySelectorAll(".heic-injected");
     allImages.forEach((img) => {
       const embed = img.closest(".internal-embed");
       const cmBlock = img.closest(".cm-embed-block");
@@ -72902,12 +72873,12 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     });
   }
   scanDocumentForHEIC() {
-    const allEmbeds = document.querySelectorAll(".internal-embed");
+    const allEmbeds = activeDocument.querySelectorAll(".internal-embed");
     for (let i = 0; i < allEmbeds.length; i++) {
       const embed = allEmbeds[i];
       const src = embed.getAttribute("src");
       if (src && (src.toLowerCase().endsWith(".heic") || src.toLowerCase().endsWith(".heif"))) {
-        this.processEmbed(embed, src);
+        void this.processEmbed(embed, src);
       }
     }
   }
@@ -72921,8 +72892,8 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     if (!(file instanceof import_obsidian.TFile))
       return;
     embed.childNodes.forEach((child) => {
-      if (child instanceof HTMLElement)
-        child.style.display = "none";
+      if (child.instanceOf(HTMLElement))
+        child.addClass("heic-hidden-embed-child");
     });
     if (this.blobCache.has(file.path)) {
       const url = this.blobCache.get(file.path);
@@ -72935,15 +72906,14 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   setupLazyLoad(embed, file, src) {
     const placeholder = embed.createEl("div", {
       text: "Scroll to load HEIC...",
-      cls: "heic-injected",
-      attr: { style: "padding: 2em; text-align: center; border: 1px dashed var(--background-modifier-border); border-radius: var(--radius-m); color: var(--text-muted); cursor: pointer;" }
+      cls: "heic-injected heic-placeholder"
     });
     const observer = new IntersectionObserver((entries, observerInstance) => {
       entries.forEach((entry) => {
         if (entry.isIntersecting) {
           observerInstance.unobserve(entry.target);
           placeholder.setText("Converting HEIC...");
-          this.convertHeic(embed, file, src, placeholder);
+          void this.convertHeic(embed, file, src, placeholder);
         }
       });
     }, { rootMargin: "50px" });
@@ -72952,7 +72922,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   async convertHeic(embed, file, src, placeholder) {
     try {
       const arrayBuffer = await this.app.vault.readBinary(file);
-      const decoder = new libheif.HeifDecoder();
+      const decoder = new import_libheif_js.HeifDecoder();
       const images = decoder.decode(arrayBuffer);
       if (!images || !images.length) {
         throw new Error("ERR_LIBHEIF no images found in file");
@@ -72967,7 +72937,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
           resolve(result);
         });
       });
-      const canvas = document.createElement("canvas");
+      const canvas = activeDocument.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d");
@@ -72986,10 +72956,9 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       placeholder.remove();
       this.injectImage(embed, url, src);
     } catch (error) {
-      const detail = error && error.message ? error.message : String(error);
+      const detail = error instanceof Error ? error.message : String(error);
       placeholder.setText(`Failed to convert ${src}: ${detail}`);
-      placeholder.style.color = "red";
-      placeholder.style.border = "1px solid red";
+      placeholder.addClass("heic-placeholder-error");
     }
   }
   // 🧠 HELPER: Manages the 30-image limit so we never run out of RAM
@@ -73008,13 +72977,10 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     }
   }
   injectImage(embed, url, src) {
-    const img = document.createElement("img");
+    const img = activeDocument.createElement("img");
     img.src = url;
     img.alt = src;
     img.addClass("heic-injected");
-    img.style.maxWidth = "100%";
-    img.style.borderRadius = "var(--radius-m)";
-    img.style.cursor = "zoom-in";
     if (this.settings.invertColors)
       img.classList.add("heic-invert");
     applyBackgroundTreatment(embed, this.settings);
@@ -73035,8 +73001,6 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     this.blobCache.forEach((url) => URL.revokeObjectURL(url));
     this.blobCache.clear();
     this.cacheQueue = [];
-    if (this.styleEl)
-      this.styleEl.remove();
   }
 };
 var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
@@ -73047,12 +73011,12 @@ var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "HEIC Viewer Settings" });
+    new import_obsidian.Setting(containerEl).setName("HEIC Viewer Settings").setHeading();
     new import_obsidian.Setting(containerEl).setName("Invert Images Color").setDesc("Inverts the colors of all HEIC images. Great for reading scanned documents.").addToggle((toggle) => toggle.setValue(this.plugin.settings.invertColors).onChange(async (value) => {
       this.plugin.settings.invertColors = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Blend/Remove Backgrounds").setDesc('Choose how to blend your images. Use "Drop White" for scanned documents, and "Drop Black" to fix iPhone cutouts that imported with black backgrounds.').addDropdown((dropdown) => dropdown.addOption("none", "No Blending").addOption("multiply", "Drop White Backgrounds").addOption("screen", "Drop Black Backgrounds").setValue(this.plugin.settings.blendMode).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Blend/Remove Backgrounds").setDesc('Choose how to blend your images. Use "Drop White" for scanned documents, and "Drop Black" to fix iPhone cutouts that imported with black backgrounds.').addDropdown((dropdown) => dropdown.addOption("none", "No Blending (default)").addOption("multiply", "Drop White Backgrounds").addOption("screen", "Drop Black Backgrounds").setValue(this.plugin.settings.blendMode).onChange(async (value) => {
       this.plugin.settings.blendMode = value;
       await this.plugin.saveSettings();
     }));
@@ -73094,7 +73058,7 @@ var HeicImageModal = class extends import_obsidian.Modal {
       if (!this.isDragging)
         return;
       this.isDragging = false;
-      this.contentEl.style.cursor = "grab";
+      this.contentEl.removeClass("heic-dragging");
     };
     this.imageUrl = imageUrl;
     this.settings = settings;
@@ -73104,23 +73068,11 @@ var HeicImageModal = class extends import_obsidian.Modal {
     modalEl.addClass("heic-fullscreen-modal");
     contentEl.empty();
     contentEl.addClass("heic-fullscreen-content");
-    contentEl.style.padding = "0";
-    contentEl.style.display = "flex";
-    contentEl.style.justifyContent = "center";
-    contentEl.style.alignItems = "center";
-    contentEl.style.overflow = "hidden";
-    contentEl.style.cursor = "grab";
     applyBackgroundTreatment(contentEl, this.settings);
     const img = contentEl.createEl("img");
     this.imgEl = img;
     img.src = this.imageUrl;
-    img.addClass("heic-injected");
-    img.style.maxWidth = "100%";
-    img.style.maxHeight = "100%";
-    img.style.objectFit = "contain";
-    img.style.borderRadius = "var(--radius-m)";
-    img.style.transformOrigin = "center center";
-    img.style.userSelect = "none";
+    img.addClass("heic-injected", "heic-fullscreen-image");
     img.draggable = false;
     if (this.settings.invertColors)
       img.classList.add("heic-invert");
@@ -73132,7 +73084,9 @@ var HeicImageModal = class extends import_obsidian.Modal {
     this.setupZoomAndPan(contentEl);
   }
   applyTransform() {
-    this.imgEl.style.transform = `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`;
+    this.imgEl.setCssStyles({
+      transform: `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`
+    });
   }
   clampScale(scale) {
     return Math.min(this.MAX_SCALE, Math.max(this.MIN_SCALE, scale));
@@ -73172,7 +73126,7 @@ var HeicImageModal = class extends import_obsidian.Modal {
       this.isDragging = true;
       this.dragStartX = event.clientX - this.offsetX;
       this.dragStartY = event.clientY - this.offsetY;
-      container.style.cursor = "grabbing";
+      container.addClass("heic-dragging");
     });
     window.addEventListener("mousemove", this.onMouseMove);
     window.addEventListener("mouseup", this.onMouseUp);

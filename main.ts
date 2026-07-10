@@ -23,44 +23,25 @@ const DEFAULT_SETTINGS: HeicViewerSettings = {
     customBackgroundColor: '#161616'
 }
 
-// Returns the actual color to paint behind transparent regions, or null to
-// mean "leave it truly transparent". Shared by the plugin class (for the
-// inline embed) and the modal (which only has a settings object, not the
-// plugin instance) so the two can never drift out of sync.
-function resolveBackgroundColor(settings: HeicViewerSettings): string | null {
-    switch (settings.backgroundMode) {
-        case 'black': return '#000000';
-        case 'white': return '#ffffff';
-        case 'custom': return settings.customBackgroundColor || '#000000';
-        case 'transparent':
-        default:
-            return null;
-    }
-}
-
 // Always strips border/shadow and gives a deliberate background treatment
-// (transparent, black, white, or custom) via CSS classes defined in
-// styles.css. A custom color is passed through as a CSS custom property
-// (setCssProps) since its value is only known at runtime.
+// (transparent, black, white, or custom) by setting the --heic-bg-override
+// CSS variable that styles.css's .heic-blend-container rule reads from.
+// A single variable, rather than one CSS class per mode, means only one
+// !important pair is needed in the stylesheet instead of four.
 function applyBackgroundTreatment(el: HTMLElement, settings: HeicViewerSettings) {
     el.classList.add('heic-blend-container');
-    el.classList.remove('heic-bg-black', 'heic-bg-white', 'heic-bg-custom');
 
+    let color: string;
     switch (settings.backgroundMode) {
-        case 'black':
-            el.classList.add('heic-bg-black');
-            break;
-        case 'white':
-            el.classList.add('heic-bg-white');
-            break;
-        case 'custom':
-            el.classList.add('heic-bg-custom');
-            el.setCssProps({ '--heic-custom-bg-color': settings.customBackgroundColor || '#161616' });
-            break;
+        case 'black': color = '#000000'; break;
+        case 'white': color = '#ffffff'; break;
+        case 'custom': color = settings.customBackgroundColor || '#161616'; break;
         case 'transparent':
         default:
-            break; // heic-blend-container alone already gives true transparency
+            color = 'transparent';
+            break;
     }
+    el.setCssProps({ '--heic-bg-override': color });
 }
 
 export default class HeicViewerPlugin extends Plugin {
@@ -82,7 +63,7 @@ export default class HeicViewerPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const loadedData: LegacyHeicViewerData | null = await this.loadData();
+        const loadedData = (await this.loadData()) as LegacyHeicViewerData | null;
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 
         // Migrate users coming from the old on/off "Dark Background" toggle:
@@ -101,8 +82,8 @@ export default class HeicViewerPlugin extends Plugin {
     updateVisibleImages() {
         const allImages = activeDocument.querySelectorAll('.heic-injected');
         allImages.forEach(img => {
-            const embed = img.closest('.internal-embed') as HTMLElement | null;
-            const cmBlock = img.closest('.cm-embed-block') as HTMLElement | null; // Live Preview wrapper
+            const embed: HTMLElement | null = img.closest('.internal-embed');
+            const cmBlock: HTMLElement | null = img.closest('.cm-embed-block'); // Live Preview wrapper
 
             // Invert
             if (this.settings.invertColors) img.classList.add('heic-invert');
@@ -267,7 +248,7 @@ export default class HeicViewerPlugin extends Plugin {
         // with an alpha channel) just shows whatever color the theme puts behind
         // the embed.
         applyBackgroundTreatment(embed, this.settings);
-        const cmBlock = embed.closest('.cm-embed-block') as HTMLElement | null;
+        const cmBlock: HTMLElement | null = embed.closest('.cm-embed-block');
         if (cmBlock) applyBackgroundTreatment(cmBlock, this.settings);
 
         if (this.settings.blendMode === 'multiply' || this.settings.blendMode === 'screen') {
@@ -301,8 +282,6 @@ class HeicViewerSettingTab extends PluginSettingTab {
     display(): void {
         const {containerEl} = this;
         containerEl.empty();
-
-        new Setting(containerEl).setName('HEIC Viewer Settings').setHeading();
 
         new Setting(containerEl)
             .setName('Invert Images Color')

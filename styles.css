@@ -8,27 +8,17 @@
     mix-blend-mode: screen;
 }
 
-/* Nuke backgrounds on the embed AND the Live Preview wrapper! */
+/* Nuke backgrounds on the embed AND the Live Preview wrapper! background-color
+   stays !important because some community themes apply !important backgrounds
+   to .internal-embed/.cm-embed-block directly -- only another !important rule
+   reliably wins there. The actual color (transparent/black/white/custom) is
+   driven entirely by the --heic-bg-override variable set from JS, so there's
+   only one !important pair to maintain instead of one per background mode. */
 .heic-blend-container {
-    background-color: transparent !important;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Background presets for transparent regions, layered on top of
-   heic-blend-container (which is always applied first). */
-.heic-bg-black {
-    background-color: #000000 !important;
-    background: #000000 !important;
-}
-.heic-bg-white {
-    background-color: #ffffff !important;
-    background: #ffffff !important;
-}
-.heic-bg-custom {
-    background-color: var(--heic-custom-bg-color, #161616) !important;
-    background: var(--heic-custom-bg-color, #161616) !important;
+    background-color: var(--heic-bg-override, transparent) !important;
+    background: var(--heic-bg-override, transparent) !important;
+    border: none;
+    box-shadow: none;
 }
 
 /* Base look for every converted <img>, wherever it's injected */
@@ -59,17 +49,19 @@ img.heic-injected {
 }
 
 /* Make the fullscreen viewer actually take over the whole screen,
-   instead of Obsidian's default centered, size-limited dialog box. */
-.heic-fullscreen-modal {
-    width: 100vw !important;
-    height: 100vh !important;
-    max-width: 100vw !important;
-    max-height: 100vh !important;
-    top: 0 !important;
-    left: 0 !important;
-    margin: 0 !important;
-    border-radius: 0 !important;
-    padding: 0 !important;
+   instead of Obsidian's default centered, size-limited dialog box.
+   Obsidian's base .modal sizing isn't !important, so a compound selector
+   (.modal.heic-fullscreen-modal) is specific enough to win outright. */
+.modal.heic-fullscreen-modal {
+    width: 100vw;
+    height: 100vh;
+    max-width: 100vw;
+    max-height: 100vh;
+    top: 0;
+    left: 0;
+    margin: 0;
+    border-radius: 0;
+    padding: 0;
 }
 .heic-fullscreen-content {
     width: 100%;

@@ -72808,22 +72808,23 @@ var DEFAULT_SETTINGS = {
 };
 function applyBackgroundTreatment(el, settings) {
   el.classList.add("heic-blend-container");
-  el.classList.remove("heic-bg-black", "heic-bg-white", "heic-bg-custom");
+  let color;
   switch (settings.backgroundMode) {
     case "black":
-      el.classList.add("heic-bg-black");
+      color = "#000000";
       break;
     case "white":
-      el.classList.add("heic-bg-white");
+      color = "#ffffff";
       break;
     case "custom":
-      el.classList.add("heic-bg-custom");
-      el.setCssProps({ "--heic-custom-bg-color": settings.customBackgroundColor || "#161616" });
+      color = settings.customBackgroundColor || "#161616";
       break;
     case "transparent":
     default:
+      color = "transparent";
       break;
   }
+  el.setCssProps({ "--heic-bg-override": color });
 }
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
   constructor() {
@@ -73011,7 +73012,6 @@ var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("HEIC Viewer Settings").setHeading();
     new import_obsidian.Setting(containerEl).setName("Invert Images Color").setDesc("Inverts the colors of all HEIC images. Great for reading scanned documents.").addToggle((toggle) => toggle.setValue(this.plugin.settings.invertColors).onChange(async (value) => {
       this.plugin.settings.invertColors = value;
       await this.plugin.saveSettings();

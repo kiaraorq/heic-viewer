@@ -256,9 +256,20 @@ export default class HeicViewerPlugin extends Plugin {
         }
         
         img.addEventListener('click', (event) => {
-            event.stopPropagation(); 
+            event.stopPropagation();
+            event.stopImmediatePropagation();
             event.preventDefault();
-            new HeicImageModal(this.app, url, this.settings).open(); 
+            new HeicImageModal(this.app, url, this.settings).open();
+        }, { capture: true });
+
+        img.addEventListener('error', () => {
+            // If the blob URL fails to load for any reason, the browser's default
+            // behavior is to fall back to showing the alt text (the filename) in
+            // place of the image -- replace it with a clearer message instead.
+            const errorEl = activeDocument.createElement('div');
+            errorEl.addClass('heic-injected', 'heic-placeholder', 'heic-placeholder-error');
+            errorEl.setText(`Couldn't display ${src} (image failed to load).`);
+            img.replaceWith(errorEl);
         });
 
         embed.appendChild(img);

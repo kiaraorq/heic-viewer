@@ -72993,8 +72993,15 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     }
     img.addEventListener("click", (event) => {
       event.stopPropagation();
+      event.stopImmediatePropagation();
       event.preventDefault();
       new HeicImageModal(this.app, url, this.settings).open();
+    }, { capture: true });
+    img.addEventListener("error", () => {
+      const errorEl = activeDocument.createElement("div");
+      errorEl.addClass("heic-injected", "heic-placeholder", "heic-placeholder-error");
+      errorEl.setText(`Couldn't display ${src} (image failed to load).`);
+      img.replaceWith(errorEl);
     });
     embed.appendChild(img);
   }

@@ -72960,19 +72960,16 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   showImage(embed, url, src) {
     const img = embed.createEl("img", { cls: "heic-own heic-image", attr: { alt: src } });
     img.src = url;
-    img.draggable = false;
     img.classList.toggle("heic-invert", this.settings.invertColors);
     setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
     let downX = 0, downY = 0, downTime = 0;
     img.addEventListener("pointerdown", (event) => {
-      img.setPointerCapture(event.pointerId);
       downX = event.clientX;
       downY = event.clientY;
       downTime = Date.now();
     }, { capture: true });
     img.addEventListener("pointerup", (event) => {
-      img.releasePointerCapture(event.pointerId);
-      const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 25;
+      const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 10;
       const quick = Date.now() - downTime < 500;
       if (moved || !quick)
         return;
@@ -72980,9 +72977,6 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       event.stopPropagation();
       event.stopImmediatePropagation();
       new HeicLightbox(url, this.settings.invertColors).open();
-    }, { capture: true });
-    img.addEventListener("pointercancel", (event) => {
-      img.releasePointerCapture(event.pointerId);
     }, { capture: true });
     img.addEventListener("click", (event) => {
       event.preventDefault();

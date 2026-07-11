@@ -196,40 +196,28 @@ export default class HeicViewerPlugin extends Plugin {
     private showImage(embed: HTMLElement, url: string, src: string) {
         const img = embed.createEl('img', { cls: 'heic-own heic-image', attr: { alt: src } });
         img.src = url;
-        img.draggable = false; // Prevent iOS from firing native drag-and-drop previews
         img.classList.toggle('heic-invert', this.settings.invertColors);
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
 
         // Open the lightbox on a tap. Detection uses pointer events instead
-        // of click. Added Pointer Capture to lock touch sequences on iPad.
+        // of click: on iOS, if anything in the editor calls preventDefault on
+        // the touch, the synthesized click never fires -- pointerup always
+        // does. The click listener only suppresses Obsidian's own preview.
         let downX = 0, downY = 0, downTime = 0;
         img.addEventListener('pointerdown', event => {
-            // Forces iOS to route all subsequent movement/up events directly to this element
-            img.setPointerCapture(event.pointerId);
             downX = event.clientX;
             downY = event.clientY;
             downTime = Date.now();
         }, { capture: true });
-
         img.addEventListener('pointerup', event => {
-            img.releasePointerCapture(event.pointerId);
-            
-            // Increased movement threshold from 10 to 25 to accommodate finger jitter on iPads
-            const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 25;
+            const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 10;
             const quick = Date.now() - downTime < 500;
             if (moved || !quick) return; // a scroll or long-press, not a tap
-            
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
             new HeicLightbox(url, this.settings.invertColors).open();
         }, { capture: true });
-
-        // Safely release capture if the OS cancels the pointer event
-        img.addEventListener('pointercancel', event => {
-            img.releasePointerCapture(event.pointerId);
-        }, { capture: true });
-
         img.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();

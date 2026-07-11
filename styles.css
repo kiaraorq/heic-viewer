@@ -4,12 +4,6 @@ img.heic-image {
     max-width: 100%;
     border-radius: var(--radius-m);
     cursor: zoom-in;
-    
-    /* Prevent iOS native selection overlays and force quick-tap responsiveness */
-    touch-action: manipulation;
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-touch-callout: none;
 }
 
 .heic-invert {
@@ -19,20 +13,10 @@ img.heic-image {
 /* Deliberate background behind image transparency on the embed.
    Color comes from the --heic-bg variable set by the plugin. !important
    because some themes set !important backgrounds on embeds directly. */
-.heic-bg,
-.internal-embed.is-failed.heic-bg {
+.heic-bg {
     background: var(--heic-bg, transparent) !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-}
-
-/* Force-hide Obsidian's default mobile fallback text, icons, and 
-   pseudo-elements that bleed through transparent backgrounds on iOS */
-.internal-embed.heic-bg::before,
-.internal-embed.heic-bg::after {
-    display: none !important;
-    content: none !important;
+    border: none;
+    box-shadow: none;
 }
 
 /* Lazy-load / conversion placeholder. */

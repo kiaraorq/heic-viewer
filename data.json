@@ -1,0 +1,9 @@
+{
+  "invertColors": false,
+  "backgroundMode": "transparent",
+  "customBackgroundColor": "#2c2a2a",
+  "blendMode": "none",
+  "darkBackground": false,
+  "blendBackground": true,
+  "invertInDarkMode": false
+}

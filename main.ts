@@ -29,10 +29,14 @@ function backgroundColorFor(mode: BackgroundMode, custom: string): string {
 }
 
 // Gives an element a deliberate background behind image transparency.
-// The color feeds the .heic-bg rule in styles.css via a CSS variable.
+// Applied two ways: the .heic-bg rule in styles.css (whose !important wins
+// against themes that use !important on embeds), and a plain inline style
+// as a fallback so it still works if styles.css is missing on a device.
 function setBackground(el: HTMLElement, mode: BackgroundMode, custom: string) {
+    const color = backgroundColorFor(mode, custom);
     el.classList.add('heic-bg');
-    el.setCssProps({ '--heic-bg': backgroundColorFor(mode, custom) });
+    el.setCssProps({ '--heic-bg': color });
+    el.setCssStyles({ background: color });
 }
 
 /* ========================================================================== *
@@ -195,13 +199,29 @@ export default class HeicViewerPlugin extends Plugin {
         img.classList.toggle('heic-invert', this.settings.invertColors);
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
 
-        // Open the lightbox; capture phase so Obsidian's built-in image
-        // preview can't hijack the tap first.
-        img.addEventListener('click', event => {
+        // Open the lightbox on a tap. Detection uses pointer events instead
+        // of click: on iOS, if anything in the editor calls preventDefault on
+        // the touch, the synthesized click never fires -- pointerup always
+        // does. The click listener only suppresses Obsidian's own preview.
+        let downX = 0, downY = 0, downTime = 0;
+        img.addEventListener('pointerdown', event => {
+            downX = event.clientX;
+            downY = event.clientY;
+            downTime = Date.now();
+        }, { capture: true });
+        img.addEventListener('pointerup', event => {
+            const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 10;
+            const quick = Date.now() - downTime < 500;
+            if (moved || !quick) return; // a scroll or long-press, not a tap
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
             new HeicLightbox(url, this.settings.invertColors).open();
+        }, { capture: true });
+        img.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
         }, { capture: true });
 
         // A failed blob load falls back to showing alt text (the filename);
@@ -317,14 +337,38 @@ class HeicLightbox {
     };
 
     constructor(imageUrl: string, invert: boolean) {
+        // Every critical style is set from JS so the lightbox works even if
+        // styles.css never made it onto the device (a repeated mobile failure
+        // mode). The classes remain for optional cosmetic theming only.
         this.root = activeDocument.createElement('div');
         this.root.addClass('heic-lightbox');
+        this.root.setCssStyles({
+            position: 'fixed',
+            top: '0',
+            right: '0',
+            bottom: '0',
+            left: '0',
+            zIndex: '9999',
+            overflow: 'hidden',
+            cursor: 'grab',
+            touchAction: 'none' // all touch input goes to the pointer handlers
+        });
         this.applyBackground();
 
         this.imgEl = this.root.createEl('img', { cls: 'heic-lightbox-image' });
         this.imgEl.src = imageUrl;
         this.imgEl.draggable = false;
         this.imgEl.classList.toggle('heic-invert', invert);
+        // width/height 100% + object-fit: contain guarantees the whole image
+        // fits the screen at scale 1 on any resolution.
+        this.imgEl.setCssStyles({
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            transformOrigin: 'center center',
+            userSelect: 'none',
+            cursor: 'inherit'
+        });
 
         this.buildControls();
         this.bindGestures();
@@ -347,13 +391,20 @@ class HeicLightbox {
             this.background === 'black' ? '#000000' :
             this.background === 'white' ? '#ffffff' :
             'var(--background-primary)';
-        this.root.setCssProps({ '--heic-lightbox-bg': color });
+        this.root.setCssStyles({ background: color });
     }
 
     /* ---- Controls -------------------------------------------------------- */
 
     private buildControls() {
         const bar = this.root.createEl('div', { cls: 'heic-lightbox-controls' });
+        bar.setCssStyles({
+            position: 'absolute',
+            top: 'calc(env(safe-area-inset-top, 0px) + 12px)', // below any notch/status bar
+            right: '12px',
+            display: 'flex',
+            gap: '8px'
+        });
         // Taps on the control bar must never start an image gesture.
         bar.addEventListener('pointerdown', event => event.stopPropagation());
 
@@ -370,6 +421,19 @@ class HeicLightbox {
 
     private button(bar: HTMLElement, icon: string, label: string, onClick: () => void) {
         const btn = bar.createEl('button', { cls: 'heic-lightbox-button', attr: { 'aria-label': label } });
+        btn.setCssStyles({
+            width: '44px', // comfortable touch target
+            height: '44px',
+            borderRadius: '50%',
+            border: 'none',
+            padding: '0',
+            backgroundColor: 'var(--background-modifier-hover)',
+            color: 'var(--text-normal)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+        });
         setIcon(btn, icon);
         btn.addEventListener('click', onClick);
     }
@@ -406,7 +470,7 @@ class HeicLightbox {
 
             if (this.pointers.size === 1 && this.scale > 1) {
                 this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
-                surface.addClass('heic-dragging');
+                surface.setCssStyles({ cursor: 'grabbing' });
             } else if (this.pointers.size === 2) {
                 this.panStart = null;
                 this.pinchStartDistance = this.pointerDistance();
@@ -434,7 +498,7 @@ class HeicLightbox {
             if (this.pointers.size < 2) this.pinchStartDistance = 0;
             if (this.pointers.size === 0) {
                 this.panStart = null;
-                surface.removeClass('heic-dragging');
+                surface.setCssStyles({ cursor: 'grab' });
             }
         };
         surface.addEventListener('pointerup', endPointer);

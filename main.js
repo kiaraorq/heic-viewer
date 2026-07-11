@@ -72818,8 +72818,10 @@ function backgroundColorFor(mode, custom) {
   }
 }
 function setBackground(el, mode, custom) {
+  const color = backgroundColorFor(mode, custom);
   el.classList.add("heic-bg");
-  el.setCssProps({ "--heic-bg": backgroundColorFor(mode, custom) });
+  el.setCssProps({ "--heic-bg": color });
+  el.setCssStyles({ background: color });
 }
 async function decodeHeicToPngBlob(buffer) {
   const images = new import_libheif_js.HeifDecoder().decode(buffer);
@@ -72960,11 +72962,26 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     img.src = url;
     img.classList.toggle("heic-invert", this.settings.invertColors);
     setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
-    img.addEventListener("click", (event) => {
+    let downX = 0, downY = 0, downTime = 0;
+    img.addEventListener("pointerdown", (event) => {
+      downX = event.clientX;
+      downY = event.clientY;
+      downTime = Date.now();
+    }, { capture: true });
+    img.addEventListener("pointerup", (event) => {
+      const moved = Math.hypot(event.clientX - downX, event.clientY - downY) > 10;
+      const quick = Date.now() - downTime < 500;
+      if (moved || !quick)
+        return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
       new HeicLightbox(url, this.settings.invertColors).open();
+    }, { capture: true });
+    img.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
     }, { capture: true });
     img.addEventListener("error", () => {
       const msg = embed.createEl("div", {
@@ -73031,11 +73048,31 @@ var HeicLightbox = class {
     };
     this.root = activeDocument.createElement("div");
     this.root.addClass("heic-lightbox");
+    this.root.setCssStyles({
+      position: "fixed",
+      top: "0",
+      right: "0",
+      bottom: "0",
+      left: "0",
+      zIndex: "9999",
+      overflow: "hidden",
+      cursor: "grab",
+      touchAction: "none"
+      // all touch input goes to the pointer handlers
+    });
     this.applyBackground();
     this.imgEl = this.root.createEl("img", { cls: "heic-lightbox-image" });
     this.imgEl.src = imageUrl;
     this.imgEl.draggable = false;
     this.imgEl.classList.toggle("heic-invert", invert);
+    this.imgEl.setCssStyles({
+      width: "100%",
+      height: "100%",
+      objectFit: "contain",
+      transformOrigin: "center center",
+      userSelect: "none",
+      cursor: "inherit"
+    });
     this.buildControls();
     this.bindGestures();
   }
@@ -73050,11 +73087,19 @@ var HeicLightbox = class {
   /* ---- Background ---------------------------------------------------- */
   applyBackground() {
     const color = this.background === "black" ? "#000000" : this.background === "white" ? "#ffffff" : "var(--background-primary)";
-    this.root.setCssProps({ "--heic-lightbox-bg": color });
+    this.root.setCssStyles({ background: color });
   }
   /* ---- Controls -------------------------------------------------------- */
   buildControls() {
     const bar = this.root.createEl("div", { cls: "heic-lightbox-controls" });
+    bar.setCssStyles({
+      position: "absolute",
+      top: "calc(env(safe-area-inset-top, 0px) + 12px)",
+      // below any notch/status bar
+      right: "12px",
+      display: "flex",
+      gap: "8px"
+    });
     bar.addEventListener("pointerdown", (event) => event.stopPropagation());
     this.button(bar, "paintbrush", "Cycle background (theme / black / white)", () => {
       this.background = this.background === "default" ? "black" : this.background === "black" ? "white" : "default";
@@ -73066,6 +73111,20 @@ var HeicLightbox = class {
   }
   button(bar, icon, label, onClick) {
     const btn = bar.createEl("button", { cls: "heic-lightbox-button", attr: { "aria-label": label } });
+    btn.setCssStyles({
+      width: "44px",
+      // comfortable touch target
+      height: "44px",
+      borderRadius: "50%",
+      border: "none",
+      padding: "0",
+      backgroundColor: "var(--background-modifier-hover)",
+      color: "var(--text-normal)",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    });
     (0, import_obsidian.setIcon)(btn, icon);
     btn.addEventListener("click", onClick);
   }
@@ -73094,7 +73153,7 @@ var HeicLightbox = class {
       this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (this.pointers.size === 1 && this.scale > 1) {
         this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
-        surface.addClass("heic-dragging");
+        surface.setCssStyles({ cursor: "grabbing" });
       } else if (this.pointers.size === 2) {
         this.panStart = null;
         this.pinchStartDistance = this.pointerDistance();
@@ -73122,7 +73181,7 @@ var HeicLightbox = class {
         this.pinchStartDistance = 0;
       if (this.pointers.size === 0) {
         this.panStart = null;
-        surface.removeClass("heic-dragging");
+        surface.setCssStyles({ cursor: "grab" });
       }
     };
     surface.addEventListener("pointerup", endPointer);

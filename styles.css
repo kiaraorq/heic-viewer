@@ -28,9 +28,12 @@ img.heic-injected {
     cursor: zoom-in;
 }
 
-/* The original embed children (broken image icon, alt text link, etc.)
-   get hidden once we've injected our own <img> in their place. */
-.heic-hidden-embed-child {
+/* Hide the embed's original children (the "file1.heic" filename link Obsidian
+   renders for unsupported file types) once we've processed the embed. Keyed
+   off the data attribute rather than per-child JS so it also covers children
+   Obsidian adds AFTER processing (mobile re-renders embeds aggressively,
+   which is how the filename was reappearing on top of the converted image). */
+.internal-embed[data-heic-processed="true"] > :not(.heic-injected) {
     display: none;
 }
 
@@ -49,32 +52,37 @@ img.heic-injected {
 }
 
 /* Make the fullscreen viewer actually take over the whole screen, instead of
-   Obsidian's default centered, size-limited dialog box. !important is back
-   here (even with a compound selector) because Obsidian's own modal sizing
-   on mobile isn't reliably beaten by specificity alone -- other plugins
-   solving this same "true fullscreen modal" problem (e.g. obsidian-spaced-
-   repetition) hit the same thing and needed !important too. */
+   Obsidian's default centered, size-limited dialog box. Sizing notes:
+   - position: fixed + inset: 0 pins the modal to the real visible screen
+     without using vw/vh units, which are unreliable on iOS (they can exceed
+     the actual visible viewport). This is what makes tablet/odd-resolution
+     screens behave the same as phone-sized ones.
+   - !important stays (even with a compound selector) because Obsidian's own
+     modal sizing on mobile isn't reliably beaten by specificity alone --
+     other plugins solving this same problem (e.g. obsidian-spaced-repetition)
+     hit the same thing and needed !important too. */
+.modal-container.heic-fullscreen-container {
+    padding: 0;
+}
 .modal.heic-fullscreen-modal {
-    --modal-width: 100vw;
-    --modal-height: 100vh;
-    --modal-max-width: 100vw;
-    --modal-max-height: 100vh;
-    width: 100vw !important;
-    height: 100vh !important;
-    max-width: 100vw !important;
-    max-height: 100vh !important;
-    top: 0 !important;
-    left: 0 !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: none !important;
+    max-height: none !important;
     margin: 0 !important;
     border-radius: 0 !important;
     padding: 0 !important;
 }
+
+/* The content layer is pinned to the modal's full area independently of
+   whatever internal layout Obsidian gives modal content on each platform.
+   NOTE: because it covers the whole modal, anything that must stay tappable
+   (close buttons) needs a higher z-index than this layer. */
 .heic-fullscreen-content {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    position: absolute;
+    inset: 0;
     overflow: hidden;
     padding: 0;
     cursor: grab;
@@ -83,11 +91,58 @@ img.heic-injected {
 .heic-fullscreen-content.heic-dragging {
     cursor: grabbing;
 }
+
+/* Keep Obsidian's own modal close button clickable: it's a sibling that the
+   full-cover content layer would otherwise sit on top of and swallow taps. */
+.modal.heic-fullscreen-modal .modal-close-button {
+    z-index: 2;
+}
+
+/* Shared scaffolding for the viewer's floating buttons. Obsidian's own close
+   button isn't guaranteed on mobile, and the two other native ways to close
+   a modal don't survive a fullscreen viewer: there's no "outside" left to
+   tap, and our pinch/pan handlers consume swipes. So the viewer carries its
+   own explicit, always-visible controls. */
+.heic-modal-button {
+    position: absolute;
+    top: calc(var(--safe-area-inset-top, 0px) + 12px);
+    z-index: 2;
+    width: 44px;  /* comfortable touch target */
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+    font-size: 20px;
+    line-height: 44px;
+    text-align: center;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.heic-modal-button:hover {
+    background-color: var(--background-modifier-active-hover);
+}
+.heic-close-button {
+    right: 12px;
+}
+.heic-bg-toggle-button {
+    right: 64px; /* 12px edge + 44px close button + 8px gap */
+}
+
+/* The image fills the content layer exactly, and object-fit: contain does
+   the letterboxing. Unlike max-width/max-height (which silently stop
+   constraining when the parent's size isn't definite -- the image then
+   renders at natural size, i.e. "zoomed in and can't see anything"),
+   width/height 100% + contain GUARANTEES the whole image fits on screen
+   at scale 1, on any resolution. Zoom scales from that fitted state. */
 .heic-fullscreen-image {
-    max-width: 100%;
-    max-height: 100%;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
-    border-radius: var(--radius-m);
     transform-origin: center center;
     user-select: none;
+    cursor: inherit; /* follow the container's grab/grabbing cursor */
 }

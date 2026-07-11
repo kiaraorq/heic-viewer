@@ -72826,21 +72826,34 @@ function applyBackgroundTreatment(el, settings) {
   }
   el.setCssProps({ "--heic-bg-override": color });
 }
+function applyImageAdjustments(img, settings) {
+  img.classList.toggle("heic-invert", settings.invertColors);
+  img.classList.remove("heic-blend-multiply", "heic-blend-screen");
+  if (settings.blendMode === "multiply" || settings.blendMode === "screen") {
+    img.classList.add(`heic-blend-${settings.blendMode}`);
+  }
+}
 var HeicViewerPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
-    // 🧠 SMART QUEUE (LRU CACHE): Safely holds up to 30 images in RAM 
+    // 🧠 SMART QUEUE (LRU CACHE): Safely holds up to 30 images in RAM
     // without ever accidentally deleting the one you are looking at!
     this.blobCache = /* @__PURE__ */ new Map();
     this.cacheQueue = [];
     this.MAX_CACHE_SIZE = 30;
   }
+  /* ---- Lifecycle ------------------------------------------------------ */
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new HeicViewerSettingTab(this.app, this));
     this.registerInterval(window.setInterval(() => {
       this.scanDocumentForHEIC();
     }, 300));
+  }
+  onunload() {
+    this.blobCache.forEach((url) => URL.revokeObjectURL(url));
+    this.blobCache.clear();
+    this.cacheQueue = [];
   }
   async loadSettings() {
     const loadedData = await this.loadData();
@@ -72854,25 +72867,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     await this.saveData(this.settings);
     this.updateVisibleImages();
   }
-  updateVisibleImages() {
-    const allImages = activeDocument.querySelectorAll(".heic-injected");
-    allImages.forEach((img) => {
-      const embed = img.closest(".internal-embed");
-      const cmBlock = img.closest(".cm-embed-block");
-      if (this.settings.invertColors)
-        img.classList.add("heic-invert");
-      else
-        img.classList.remove("heic-invert");
-      img.classList.remove("heic-blend-multiply", "heic-blend-screen");
-      if (embed)
-        applyBackgroundTreatment(embed, this.settings);
-      if (cmBlock)
-        applyBackgroundTreatment(cmBlock, this.settings);
-      if (this.settings.blendMode === "multiply" || this.settings.blendMode === "screen") {
-        img.classList.add(`heic-blend-${this.settings.blendMode}`);
-      }
-    });
-  }
+  /* ---- Scanning & embed processing ------------------------------------ */
   scanDocumentForHEIC() {
     const allEmbeds = activeDocument.querySelectorAll(".internal-embed");
     for (let i = 0; i < allEmbeds.length; i++) {
@@ -72892,10 +72887,6 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     const file = this.app.metadataCache.getFirstLinkpathDest(src, sourcePath);
     if (!(file instanceof import_obsidian.TFile))
       return;
-    embed.childNodes.forEach((child) => {
-      if (child.instanceOf(HTMLElement))
-        child.addClass("heic-hidden-embed-child");
-    });
     if (this.blobCache.has(file.path)) {
       const url = this.blobCache.get(file.path);
       this.addToCache(file.path, url);
@@ -72920,38 +72911,44 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     }, { rootMargin: "50px" });
     observer.observe(placeholder);
   }
+  /* ---- HEIC decoding --------------------------------------------------- */
+  // Decodes a HEIC/HEIF file's bytes into a PNG blob, preserving the alpha
+  // channel (verified against libheif's reference decoder).
+  async decodeHeicToBlob(arrayBuffer) {
+    const decoder = new import_libheif_js.HeifDecoder();
+    const images = decoder.decode(arrayBuffer);
+    if (!images || !images.length) {
+      throw new Error("ERR_LIBHEIF no images found in file");
+    }
+    const image = images[0];
+    const width = image.get_width();
+    const height = image.get_height();
+    const imageData = await new Promise((resolve, reject) => {
+      image.display(new ImageData(width, height), (result) => {
+        if (!result)
+          return reject(new Error("ERR_LIBHEIF display() failed"));
+        resolve(result);
+      });
+    });
+    const canvas = activeDocument.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx)
+      throw new Error("ERR_CANVAS could not get 2d context");
+    ctx.putImageData(imageData, 0, 0);
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob)
+          return reject(new Error("ERR_CANVAS toBlob failed"));
+        resolve(blob);
+      }, "image/png");
+    });
+  }
   async convertHeic(embed, file, src, placeholder) {
     try {
       const arrayBuffer = await this.app.vault.readBinary(file);
-      const decoder = new import_libheif_js.HeifDecoder();
-      const images = decoder.decode(arrayBuffer);
-      if (!images || !images.length) {
-        throw new Error("ERR_LIBHEIF no images found in file");
-      }
-      const image = images[0];
-      const width = image.get_width();
-      const height = image.get_height();
-      const imageData = await new Promise((resolve, reject) => {
-        image.display(new ImageData(width, height), (result) => {
-          if (!result)
-            return reject(new Error("ERR_LIBHEIF display() failed"));
-          resolve(result);
-        });
-      });
-      const canvas = activeDocument.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx)
-        throw new Error("ERR_CANVAS could not get 2d context");
-      ctx.putImageData(imageData, 0, 0);
-      const resultBlob = await new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (!blob)
-            return reject(new Error("ERR_CANVAS toBlob failed"));
-          resolve(blob);
-        }, "image/png");
-      });
+      const resultBlob = await this.decodeHeicToBlob(arrayBuffer);
       const url = URL.createObjectURL(resultBlob);
       this.addToCache(file.path, url);
       placeholder.remove();
@@ -72962,6 +72959,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       placeholder.addClass("heic-placeholder-error");
     }
   }
+  /* ---- Blob cache ------------------------------------------------------ */
   // 🧠 HELPER: Manages the 30-image limit so we never run out of RAM
   addToCache(filePath, url) {
     this.blobCache.set(filePath, url);
@@ -72977,20 +72975,14 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       }
     }
   }
+  /* ---- DOM injection & live updates ------------------------------------ */
   injectImage(embed, url, src) {
     const img = activeDocument.createElement("img");
     img.src = url;
     img.alt = src;
     img.addClass("heic-injected");
-    if (this.settings.invertColors)
-      img.classList.add("heic-invert");
-    applyBackgroundTreatment(embed, this.settings);
-    const cmBlock = embed.closest(".cm-embed-block");
-    if (cmBlock)
-      applyBackgroundTreatment(cmBlock, this.settings);
-    if (this.settings.blendMode === "multiply" || this.settings.blendMode === "screen") {
-      img.classList.add(`heic-blend-${this.settings.blendMode}`);
-    }
+    applyImageAdjustments(img, this.settings);
+    this.applyContainerBackgrounds(embed);
     img.addEventListener("click", (event) => {
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -73005,10 +72997,25 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     });
     embed.appendChild(img);
   }
-  onunload() {
-    this.blobCache.forEach((url) => URL.revokeObjectURL(url));
-    this.blobCache.clear();
-    this.cacheQueue = [];
+  // Re-applies current settings to every already-visible converted image.
+  // Called after any settings change so toggles take effect immediately.
+  updateVisibleImages() {
+    const allImages = activeDocument.querySelectorAll(".heic-injected");
+    allImages.forEach((img) => {
+      applyImageAdjustments(img, this.settings);
+      const embed = img.closest(".internal-embed");
+      if (embed)
+        this.applyContainerBackgrounds(embed);
+    });
+  }
+  // Applies the background treatment to the embed itself AND its Live
+  // Preview wrapper (.cm-embed-block), the two containers whose theme
+  // backgrounds would otherwise show behind a transparent image.
+  applyContainerBackgrounds(embed) {
+    applyBackgroundTreatment(embed, this.settings);
+    const cmBlock = embed.closest(".cm-embed-block");
+    if (cmBlock)
+      applyBackgroundTreatment(cmBlock, this.settings);
   }
 };
 var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
@@ -73040,10 +73047,17 @@ var HeicViewerSettingTab = class extends import_obsidian.PluginSettingTab {
     }
   }
 };
-var HeicImageModal = class extends import_obsidian.Modal {
+var _HeicImageModal = class extends import_obsidian.Modal {
   constructor(app, imageUrl, settings) {
     super(app);
-    // Zoom/pan state
+    // Temporary background override for this viewer session only. Cycles
+    // configured -> black -> white -> configured; never touches saved
+    // settings. Useful when a transparent image looks bad over the dimmed
+    // note text/GUI behind the modal.
+    this.tempBackground = null;
+    // Zoom/pan state. Scale 1 = "fit to screen"; zooming both in (up to
+    // MAX_SCALE) and out (down to MIN_SCALE) is allowed, and panning is only
+    // enabled while zoomed IN, since a zoomed-out image is fully visible.
     this.scale = 1;
     this.offsetX = 0;
     this.offsetY = 0;
@@ -73052,8 +73066,9 @@ var HeicImageModal = class extends import_obsidian.Modal {
     this.dragStartY = 0;
     this.lastTouchDistance = 0;
     this.singleTouchStart = { x: 0, y: 0, offsetX: 0, offsetY: 0 };
-    this.MIN_SCALE = 1;
+    this.MIN_SCALE = 0.2;
     this.MAX_SCALE = 6;
+    this.FIT_SCALE = 1;
     this.onMouseMove = (event) => {
       if (!this.isDragging)
         return;
@@ -73070,26 +73085,83 @@ var HeicImageModal = class extends import_obsidian.Modal {
     this.imageUrl = imageUrl;
     this.settings = settings;
   }
+  /* ---- Setup ----------------------------------------------------------- */
   onOpen() {
-    const { contentEl, modalEl } = this;
+    const { contentEl, modalEl, containerEl } = this;
+    containerEl.addClass("heic-fullscreen-container");
     modalEl.addClass("heic-fullscreen-modal");
     contentEl.empty();
     contentEl.addClass("heic-fullscreen-content");
-    applyBackgroundTreatment(contentEl, this.settings);
+    this.applyModalBackground();
     const img = contentEl.createEl("img");
     this.imgEl = img;
     img.src = this.imageUrl;
     img.addClass("heic-injected", "heic-fullscreen-image");
     img.draggable = false;
-    if (this.settings.invertColors)
-      img.classList.add("heic-invert");
-    if (this.settings.blendMode === "multiply") {
-      img.classList.add("heic-blend-multiply");
-    } else if (this.settings.blendMode === "screen") {
-      img.classList.add("heic-blend-screen");
-    }
+    applyImageAdjustments(img, this.settings);
+    this.addButtons(contentEl);
     this.setupZoomAndPan(contentEl);
   }
+  /* ---- Background ------------------------------------------------------- */
+  // Applies the background treatment to BOTH the content element and the
+  // modal element itself. The .modal element has its own theme background
+  // (--modal-background, dark on dark themes); treating only contentEl
+  // makes it transparent but just reveals the modal's dark background
+  // behind it. Honors the temporary override when one is active.
+  applyModalBackground() {
+    const effective = this.tempBackground ? { ...this.settings, backgroundMode: this.tempBackground } : this.settings;
+    applyBackgroundTreatment(this.contentEl, effective);
+    applyBackgroundTreatment(this.modalEl, effective);
+  }
+  cycleTempBackground(button) {
+    const cycle = _HeicImageModal.TEMP_BACKGROUND_CYCLE;
+    const next = cycle[(cycle.indexOf(this.tempBackground) + 1) % cycle.length];
+    this.tempBackground = next;
+    this.applyModalBackground();
+    const label = next === null ? "as configured" : next;
+    button.setAttribute("aria-label", `Toggle temporary background (current: ${label})`);
+  }
+  /* ---- Buttons ---------------------------------------------------------- */
+  // The viewer needs its own buttons: the fullscreen content layer covers
+  // Obsidian's close button, and the other native ways out of a modal don't
+  // survive a fullscreen viewer (no "outside" left to tap, and our
+  // pinch/pan handlers consume swipe gestures).
+  addButtons(container) {
+    const closeBtn = this.createModalButton(container, "heic-close-button", "Close image viewer");
+    closeBtn.setText("\u2715");
+    closeBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.close();
+    });
+    const bgBtn = this.createModalButton(
+      container,
+      "heic-bg-toggle-button",
+      "Toggle temporary background (current: as configured)"
+    );
+    (0, import_obsidian.setIcon)(bgBtn, "palette");
+    bgBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.cycleTempBackground(bgBtn);
+    });
+  }
+  // Shared button scaffolding: styling class plus pointer-event isolation,
+  // so a tap on a button never doubles as the start of a drag/zoom gesture
+  // on the container beneath it.
+  createModalButton(container, cls, ariaLabel) {
+    const btn = container.createEl("button", {
+      cls: ["heic-modal-button", cls],
+      attr: { "aria-label": ariaLabel }
+    });
+    btn.addEventListener("mousedown", (event) => event.stopPropagation());
+    btn.addEventListener("touchstart", (event) => event.stopPropagation(), { passive: true });
+    return btn;
+  }
+  onClose() {
+    window.removeEventListener("mousemove", this.onMouseMove);
+    window.removeEventListener("mouseup", this.onMouseUp);
+    this.contentEl.empty();
+  }
+  /* ---- Zoom/pan mechanics ---------------------------------------------- */
   applyTransform() {
     this.imgEl.setCssStyles({
       transform: `translate(${this.offsetX}px, ${this.offsetY}px) scale(${this.scale})`
@@ -73098,8 +73170,16 @@ var HeicImageModal = class extends import_obsidian.Modal {
   clampScale(scale) {
     return Math.min(this.MAX_SCALE, Math.max(this.MIN_SCALE, scale));
   }
+  setScale(newScale) {
+    this.scale = this.clampScale(newScale);
+    if (this.scale <= this.FIT_SCALE) {
+      this.offsetX = 0;
+      this.offsetY = 0;
+    }
+    this.applyTransform();
+  }
   resetZoom() {
-    this.scale = this.MIN_SCALE;
+    this.scale = this.FIT_SCALE;
     this.offsetX = 0;
     this.offsetY = 0;
     this.applyTransform();
@@ -73108,27 +73188,18 @@ var HeicImageModal = class extends import_obsidian.Modal {
     container.addEventListener("wheel", (event) => {
       event.preventDefault();
       const delta = -event.deltaY * 15e-4;
-      const newScale = this.clampScale(this.scale + this.scale * delta);
-      if (newScale === this.scale)
-        return;
-      this.scale = newScale;
-      if (this.scale === this.MIN_SCALE) {
-        this.offsetX = 0;
-        this.offsetY = 0;
-      }
-      this.applyTransform();
+      this.setScale(this.scale + this.scale * delta);
     }, { passive: false });
     container.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      if (this.scale > this.MIN_SCALE) {
+      if (this.scale !== this.FIT_SCALE) {
         this.resetZoom();
       } else {
-        this.scale = this.clampScale(3);
-        this.applyTransform();
+        this.setScale(3);
       }
     });
     container.addEventListener("mousedown", (event) => {
-      if (this.scale <= this.MIN_SCALE)
+      if (this.scale <= this.FIT_SCALE)
         return;
       this.isDragging = true;
       this.dragStartX = event.clientX - this.offsetX;
@@ -73140,7 +73211,7 @@ var HeicImageModal = class extends import_obsidian.Modal {
     container.addEventListener("touchstart", (event) => {
       if (event.touches.length === 2) {
         this.lastTouchDistance = this.getTouchDistance(event.touches);
-      } else if (event.touches.length === 1 && this.scale > this.MIN_SCALE) {
+      } else if (event.touches.length === 1 && this.scale > this.FIT_SCALE) {
         const touch = event.touches[0];
         this.singleTouchStart = { x: touch.clientX, y: touch.clientY, offsetX: this.offsetX, offsetY: this.offsetY };
       }
@@ -73150,12 +73221,10 @@ var HeicImageModal = class extends import_obsidian.Modal {
         event.preventDefault();
         const distance = this.getTouchDistance(event.touches);
         if (this.lastTouchDistance > 0) {
-          const ratio = distance / this.lastTouchDistance;
-          this.scale = this.clampScale(this.scale * ratio);
-          this.applyTransform();
+          this.setScale(this.scale * (distance / this.lastTouchDistance));
         }
         this.lastTouchDistance = distance;
-      } else if (event.touches.length === 1 && this.scale > this.MIN_SCALE) {
+      } else if (event.touches.length === 1 && this.scale > this.FIT_SCALE) {
         event.preventDefault();
         const touch = event.touches[0];
         this.offsetX = this.singleTouchStart.offsetX + (touch.clientX - this.singleTouchStart.x);
@@ -73165,11 +73234,6 @@ var HeicImageModal = class extends import_obsidian.Modal {
     }, { passive: false });
     container.addEventListener("touchend", () => {
       this.lastTouchDistance = 0;
-      if (this.scale === this.MIN_SCALE) {
-        this.offsetX = 0;
-        this.offsetY = 0;
-        this.applyTransform();
-      }
     });
   }
   getTouchDistance(touches) {
@@ -73177,9 +73241,6 @@ var HeicImageModal = class extends import_obsidian.Modal {
     const dy = touches[0].clientY - touches[1].clientY;
     return Math.sqrt(dx * dx + dy * dy);
   }
-  onClose() {
-    window.removeEventListener("mousemove", this.onMouseMove);
-    window.removeEventListener("mouseup", this.onMouseUp);
-    this.contentEl.empty();
-  }
 };
+var HeicImageModal = _HeicImageModal;
+HeicImageModal.TEMP_BACKGROUND_CYCLE = [null, "black", "white"];

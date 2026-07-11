@@ -1,70 +1,47 @@
-.heic-invert {
-    filter: invert(1) hue-rotate(180deg);
-}
-.heic-blend-multiply {
-    mix-blend-mode: multiply;
-}
-.heic-blend-screen {
-    mix-blend-mode: screen;
-}
+/* ==== Inline images ==== */
 
-/* Nuke backgrounds on the embed AND the Live Preview wrapper! background-color
-   stays !important because some community themes apply !important backgrounds
-   to .internal-embed/.cm-embed-block directly -- only another !important rule
-   reliably wins there. The actual color (transparent/black/white/custom) is
-   driven entirely by the --heic-bg-override variable set from JS, so there's
-   only one !important pair to maintain instead of one per background mode. */
-.heic-blend-container {
-    background-color: var(--heic-bg-override, transparent) !important;
-    background: var(--heic-bg-override, transparent) !important;
-    border: none;
-    box-shadow: none;
-}
-
-/* Base look for every converted <img>, wherever it's injected */
-img.heic-injected {
+img.heic-image {
     max-width: 100%;
     border-radius: var(--radius-m);
     cursor: zoom-in;
 }
 
-/* Hide the embed's original children (the "file1.heic" filename link Obsidian
-   renders for unsupported file types) once we've processed the embed. Keyed
-   off the data attribute rather than per-child JS so it also covers children
-   Obsidian adds AFTER processing (mobile re-renders embeds aggressively,
-   which is how the filename was reappearing on top of the converted image). */
-.internal-embed[data-heic-processed="true"] > :not(.heic-injected) {
-    display: none;
+.heic-invert {
+    filter: invert(1) hue-rotate(180deg);
 }
 
-/* Lazy-load placeholder shown before the user scrolls the image into view */
+/* Deliberate background behind image transparency (embed and viewer).
+   Color comes from the --heic-bg variable set by the plugin. !important
+   because some themes set !important backgrounds on embeds directly. */
+.heic-bg {
+    background: var(--heic-bg, transparent) !important;
+    border: none;
+    box-shadow: none;
+}
+
+/* Lazy-load / conversion placeholder. */
 .heic-placeholder {
     padding: 2em;
     text-align: center;
     border: 1px dashed var(--background-modifier-border);
     border-radius: var(--radius-m);
     color: var(--text-muted);
-    cursor: pointer;
 }
-.heic-placeholder-error {
+.heic-error {
     color: var(--text-error);
     border: 1px solid var(--text-error);
 }
 
-/* Make the fullscreen viewer actually take over the whole screen, instead of
-   Obsidian's default centered, size-limited dialog box. Sizing notes:
-   - position: fixed + inset: 0 pins the modal to the real visible screen
-     without using vw/vh units, which are unreliable on iOS (they can exceed
-     the actual visible viewport). This is what makes tablet/odd-resolution
-     screens behave the same as phone-sized ones.
-   - !important stays (even with a compound selector) because Obsidian's own
-     modal sizing on mobile isn't reliably beaten by specificity alone --
-     other plugins solving this same problem (e.g. obsidian-spaced-repetition)
-     hit the same thing and needed !important too. */
-.modal-container.heic-fullscreen-container {
+/* ==== Fullscreen viewer ==== */
+
+/* position: fixed + inset: 0 pins the viewer to the real visible screen
+   without vw/vh units, which are unreliable on iOS. !important because
+   Obsidian's own modal sizing isn't reliably beaten by specificity alone,
+   especially on mobile. */
+.modal-container.heic-viewer-container {
     padding: 0;
 }
-.modal.heic-fullscreen-modal {
+.modal.heic-viewer-modal {
     position: fixed !important;
     inset: 0 !important;
     width: auto !important;
@@ -76,73 +53,59 @@ img.heic-injected {
     padding: 0 !important;
 }
 
-/* The content layer is pinned to the modal's full area independently of
-   whatever internal layout Obsidian gives modal content on each platform.
-   NOTE: because it covers the whole modal, anything that must stay tappable
-   (close buttons) needs a higher z-index than this layer. */
-.heic-fullscreen-content {
+/* Gesture surface covering the whole viewer. touch-action: none hands all
+   touch input to the plugin's pointer-event handlers. */
+.heic-viewer-content {
     position: absolute;
     inset: 0;
     overflow: hidden;
     padding: 0;
     cursor: grab;
-    touch-action: none; /* we handle pinch/pan ourselves */
+    touch-action: none;
 }
-.heic-fullscreen-content.heic-dragging {
+.heic-viewer-content.heic-dragging {
     cursor: grabbing;
 }
 
-/* Keep Obsidian's own modal close button clickable: it's a sibling that the
-   full-cover content layer would otherwise sit on top of and swallow taps. */
-.modal.heic-fullscreen-modal .modal-close-button {
+/* Keep Obsidian's own modal close button tappable above the gesture surface. */
+.modal.heic-viewer-modal .modal-close-button {
     z-index: 2;
 }
 
-/* Shared scaffolding for the viewer's floating buttons. Obsidian's own close
-   button isn't guaranteed on mobile, and the two other native ways to close
-   a modal don't survive a fullscreen viewer: there's no "outside" left to
-   tap, and our pinch/pan handlers consume swipes. So the viewer carries its
-   own explicit, always-visible controls. */
-.heic-modal-button {
-    position: absolute;
-    top: calc(var(--safe-area-inset-top, 0px) + 12px);
-    z-index: 2;
-    width: 44px;  /* comfortable touch target */
-    height: 44px;
-    border-radius: 50%;
-    border: none;
-    background-color: var(--background-modifier-hover);
-    color: var(--text-normal);
-    font-size: 20px;
-    line-height: 44px;
-    text-align: center;
-    padding: 0;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.heic-modal-button:hover {
-    background-color: var(--background-modifier-active-hover);
-}
-.heic-close-button {
-    right: 12px;
-}
-.heic-bg-toggle-button {
-    right: 64px; /* 12px edge + 44px close button + 8px gap */
-}
-
-/* The image fills the content layer exactly, and object-fit: contain does
-   the letterboxing. Unlike max-width/max-height (which silently stop
-   constraining when the parent's size isn't definite -- the image then
-   renders at natural size, i.e. "zoomed in and can't see anything"),
-   width/height 100% + contain GUARANTEES the whole image fits on screen
-   at scale 1, on any resolution. Zoom scales from that fitted state. */
-.heic-fullscreen-image {
+/* width/height 100% + object-fit: contain guarantees the whole image fits
+   the screen at scale 1 on any resolution (max-width/max-height silently
+   stop constraining when the parent's size isn't definite). */
+.heic-viewer-image {
     width: 100%;
     height: 100%;
     object-fit: contain;
     transform-origin: center center;
     user-select: none;
-    cursor: inherit; /* follow the container's grab/grabbing cursor */
+    cursor: inherit;
+}
+
+/* Control bar: one flex row in the top-right, below any notch/status bar. */
+.heic-viewer-controls {
+    position: absolute;
+    top: calc(var(--safe-area-inset-top, 0px) + 12px);
+    right: 12px;
+    z-index: 2;
+    display: flex;
+    gap: 8px;
+}
+.heic-viewer-button {
+    width: 44px; /* comfortable touch target */
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    padding: 0;
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.heic-viewer-button:hover {
+    background-color: var(--background-modifier-active-hover);
 }

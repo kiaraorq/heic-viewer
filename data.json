@@ -1,8 +1,8 @@
 {
   "invertColors": false,
-  "blendMode": "none",
   "backgroundMode": "transparent",
-  "customBackgroundColor": "#161616",
+  "customBackgroundColor": "#2c2a2a",
+  "blendMode": "none",
   "darkBackground": false,
   "blendBackground": true,
   "invertInDarkMode": false

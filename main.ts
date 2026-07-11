@@ -1,4 +1,4 @@
-import { App, Modal, Plugin, PluginSettingTab, Setting, TFile, setIcon } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, setIcon } from 'obsidian';
 import { HeifDecoder, HeifImage } from 'libheif-js';
 
 /* ========================================================================== *
@@ -195,13 +195,13 @@ export default class HeicViewerPlugin extends Plugin {
         img.classList.toggle('heic-invert', this.settings.invertColors);
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
 
-        // Open our viewer; capture-phase + stopImmediatePropagation keeps
-        // Obsidian's built-in image preview from hijacking the tap.
+        // Open the lightbox; capture phase so Obsidian's built-in image
+        // preview can't hijack the tap first.
         img.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
-            new HeicViewerModal(this.app, url, this.settings).open();
+            new HeicLightbox(url, this.settings.invertColors).open();
         }, { capture: true });
 
         // A failed blob load falls back to showing alt text (the filename);
@@ -277,19 +277,23 @@ class HeicSettingTab extends PluginSettingTab {
     }
 }
 
+
 /* ========================================================================== *
- *  Fullscreen viewer                                                         *
+ *  Lightbox                                                                  *
  *                                                                            *
- *  Input handling uses Pointer Events exclusively: one code path for mouse,  *
- *  touch, and pen on every platform, instead of parallel mouse and touch     *
- *  systems that can disagree. Zoom always works via the on-screen buttons    *
- *  even if a gesture misbehaves on some device.                              *
+ *  A plain fullscreen overlay appended to the document body. It does NOT     *
+ *  use Obsidian's Modal, so none of Obsidian's per-platform modal styling    *
+ *  applies to it: its geometry is fully its own on desktop, tablet, and      *
+ *  phone. All input is handled through Pointer Events (one code path for     *
+ *  mouse, touch, and pen), and zoom always works through the on-screen       *
+ *  buttons even if a gesture misbehaves on some device.                      *
  * ========================================================================== */
 
-class HeicViewerModal extends Modal {
+type LightboxBackground = 'default' | 'black' | 'white';
+
+class HeicLightbox {
+    private root: HTMLElement;
     private imgEl!: HTMLImageElement;
-    private tempBackground: BackgroundMode | null = null;
-    private static readonly BG_CYCLE: (BackgroundMode | null)[] = [null, 'black', 'white'];
 
     // Transform state. Scale 1 = image fitted to screen.
     private scale = 1;
@@ -298,82 +302,79 @@ class HeicViewerModal extends Modal {
     private readonly MIN_SCALE = 0.2;
     private readonly MAX_SCALE = 8;
 
-    // Active pointers (by pointerId) and gesture state.
+    // Momentary background for viewing transparent images: default (theme
+    // background) -> black -> white -> default. Never persisted.
+    private background: LightboxBackground = 'default';
+
+    // Gesture state (Pointer Events).
     private pointers = new Map<number, { x: number; y: number }>();
     private pinchStartDistance = 0;
     private pinchStartScale = 1;
     private panStart: { x: number; y: number; tx: number; ty: number } | null = null;
-    private lastTapTime = 0;
-    private downPos = { x: 0, y: 0 };
 
-    constructor(app: App, private imageUrl: string, private settings: HeicViewerSettings) {
-        super(app);
-    }
+    private onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') this.close();
+    };
 
-    /* ---- Setup ------------------------------------------------------------- */
-
-    onOpen() {
-        const { contentEl, modalEl, containerEl } = this;
-
-        containerEl.addClass('heic-viewer-container');
-        modalEl.addClass('heic-viewer-modal');
-        contentEl.empty();
-        contentEl.addClass('heic-viewer-content');
+    constructor(imageUrl: string, invert: boolean) {
+        this.root = activeDocument.createElement('div');
+        this.root.addClass('heic-lightbox');
         this.applyBackground();
 
-        this.imgEl = contentEl.createEl('img', { cls: 'heic-viewer-image' });
-        this.imgEl.src = this.imageUrl;
+        this.imgEl = this.root.createEl('img', { cls: 'heic-lightbox-image' });
+        this.imgEl.src = imageUrl;
         this.imgEl.draggable = false;
-        this.imgEl.classList.toggle('heic-invert', this.settings.invertColors);
+        this.imgEl.classList.toggle('heic-invert', invert);
 
-        this.buildControls(contentEl);
-        this.bindGestures(contentEl);
+        this.buildControls();
+        this.bindGestures();
     }
 
-    onClose() {
-        // All listeners live on contentEl and its children; emptying it is
-        // the entire cleanup (no window/document listeners are used).
-        this.contentEl.empty();
+    open() {
+        activeDocument.body.appendChild(this.root);
+        activeDocument.addEventListener('keydown', this.onKeyDown);
     }
 
-    /* ---- Background ---------------------------------------------------------- */
+    close() {
+        activeDocument.removeEventListener('keydown', this.onKeyDown);
+        this.root.remove();
+    }
+
+    /* ---- Background ---------------------------------------------------- */
 
     private applyBackground() {
-        const mode = this.tempBackground ?? this.settings.backgroundMode;
-        setBackground(this.contentEl, mode, this.settings.customBackgroundColor);
-        setBackground(this.modalEl, mode, this.settings.customBackgroundColor);
+        const color =
+            this.background === 'black' ? '#000000' :
+            this.background === 'white' ? '#ffffff' :
+            'var(--background-primary)';
+        this.root.setCssProps({ '--heic-lightbox-bg': color });
     }
 
-    /* ---- Controls -------------------------------------------------------------- */
+    /* ---- Controls -------------------------------------------------------- */
 
-    private buildControls(container: HTMLElement) {
-        const bar = container.createEl('div', { cls: 'heic-viewer-controls' });
+    private buildControls() {
+        const bar = this.root.createEl('div', { cls: 'heic-lightbox-controls' });
         // Taps on the control bar must never start an image gesture.
         bar.addEventListener('pointerdown', event => event.stopPropagation());
 
-        const bgBtn = this.addControl(bar, 'palette', 'Cycle temporary background');
-        bgBtn.addEventListener('click', () => {
-            const cycle = HeicViewerModal.BG_CYCLE;
-            this.tempBackground = cycle[(cycle.indexOf(this.tempBackground) + 1) % cycle.length];
+        this.button(bar, 'paintbrush', 'Cycle background (theme / black / white)', () => {
+            this.background =
+                this.background === 'default' ? 'black' :
+                this.background === 'black' ? 'white' : 'default';
             this.applyBackground();
         });
-
-        this.addControl(bar, 'zoom-out', 'Zoom out')
-            .addEventListener('click', () => this.setScale(this.scale / 1.5));
-        this.addControl(bar, 'zoom-in', 'Zoom in')
-            .addEventListener('click', () => this.setScale(this.scale * 1.5));
-
-        const closeBtn = this.addControl(bar, 'x', 'Close viewer');
-        closeBtn.addEventListener('click', () => this.close());
+        this.button(bar, 'zoom-out', 'Zoom out', () => this.setScale(this.scale / 1.5));
+        this.button(bar, 'zoom-in', 'Zoom in', () => this.setScale(this.scale * 1.5));
+        this.button(bar, 'x', 'Close', () => this.close());
     }
 
-    private addControl(bar: HTMLElement, icon: string, label: string): HTMLButtonElement {
-        const btn = bar.createEl('button', { cls: 'heic-viewer-button', attr: { 'aria-label': label } });
+    private button(bar: HTMLElement, icon: string, label: string, onClick: () => void) {
+        const btn = bar.createEl('button', { cls: 'heic-lightbox-button', attr: { 'aria-label': label } });
         setIcon(btn, icon);
-        return btn;
+        btn.addEventListener('click', onClick);
     }
 
-    /* ---- Zoom & pan --------------------------------------------------------------- */
+    /* ---- Zoom & pan --------------------------------------------------------- */
 
     private setScale(value: number) {
         this.scale = Math.min(this.MAX_SCALE, Math.max(this.MIN_SCALE, value));
@@ -396,17 +397,16 @@ class HeicViewerModal extends Modal {
         return Math.hypot(a.x - b.x, a.y - b.y);
     }
 
-    private bindGestures(surface: HTMLElement) {
+    private bindGestures() {
+        const surface = this.root;
+
         surface.addEventListener('pointerdown', event => {
             surface.setPointerCapture(event.pointerId);
             this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
-            if (this.pointers.size === 1) {
-                this.downPos = { x: event.clientX, y: event.clientY };
-                if (this.scale > 1) {
-                    this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
-                    surface.addClass('heic-dragging');
-                }
+            if (this.pointers.size === 1 && this.scale > 1) {
+                this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
+                surface.addClass('heic-dragging');
             } else if (this.pointers.size === 2) {
                 this.panStart = null;
                 this.pinchStartDistance = this.pointerDistance();
@@ -433,19 +433,8 @@ class HeicViewerModal extends Modal {
             if (!this.pointers.delete(event.pointerId)) return;
             if (this.pointers.size < 2) this.pinchStartDistance = 0;
             if (this.pointers.size === 0) {
-                surface.removeClass('heic-dragging');
-
-                // Double-tap (or double-click) toggles between fit and 3x.
-                // Works identically for touch and mouse via pointer events.
-                const moved = Math.hypot(event.clientX - this.downPos.x, event.clientY - this.downPos.y) > 10;
-                const now = Date.now();
-                if (!moved && now - this.lastTapTime < 300) {
-                    this.setScale(this.scale === 1 ? 3 : 1);
-                    this.lastTapTime = 0;
-                } else if (!moved) {
-                    this.lastTapTime = now;
-                }
                 this.panStart = null;
+                surface.removeClass('heic-dragging');
             }
         };
         surface.addEventListener('pointerup', endPointer);

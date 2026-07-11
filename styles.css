@@ -10,7 +10,7 @@ img.heic-image {
     filter: invert(1) hue-rotate(180deg);
 }
 
-/* Deliberate background behind image transparency (embed and viewer).
+/* Deliberate background behind image transparency on the embed.
    Color comes from the --heic-bg variable set by the plugin. !important
    because some themes set !important backgrounds on embeds directly. */
 .heic-bg {
@@ -32,50 +32,27 @@ img.heic-image {
     border: 1px solid var(--text-error);
 }
 
-/* ==== Fullscreen viewer ==== */
+/* ==== Lightbox ==== */
 
-/* position: fixed + inset: 0 pins the viewer to the real visible screen
-   without vw/vh units, which are unreliable on iOS. !important because
-   Obsidian's own modal sizing isn't reliably beaten by specificity alone,
-   especially on mobile. */
-.modal-container.heic-viewer-container {
-    padding: 0;
-}
-.modal.heic-viewer-modal {
-    position: fixed !important;
-    inset: 0 !important;
-    width: auto !important;
-    height: auto !important;
-    max-width: none !important;
-    max-height: none !important;
-    margin: 0 !important;
-    border-radius: 0 !important;
-    padding: 0 !important;
-}
-
-/* Gesture surface covering the whole viewer. touch-action: none hands all
-   touch input to the plugin's pointer-event handlers. */
-.heic-viewer-content {
-    position: absolute;
+/* A plain body-attached overlay: none of Obsidian's modal CSS applies.
+   fixed + inset pins it to the visible screen without vw/vh units, which
+   are unreliable on iOS. */
+.heic-lightbox {
+    position: fixed;
     inset: 0;
+    z-index: var(--layer-modal, 100);
+    background: var(--heic-lightbox-bg, var(--background-primary));
     overflow: hidden;
-    padding: 0;
     cursor: grab;
-    touch-action: none;
+    touch-action: none; /* all touch input goes to the pointer handlers */
 }
-.heic-viewer-content.heic-dragging {
+.heic-lightbox.heic-dragging {
     cursor: grabbing;
 }
 
-/* Keep Obsidian's own modal close button tappable above the gesture surface. */
-.modal.heic-viewer-modal .modal-close-button {
-    z-index: 2;
-}
-
 /* width/height 100% + object-fit: contain guarantees the whole image fits
-   the screen at scale 1 on any resolution (max-width/max-height silently
-   stop constraining when the parent's size isn't definite). */
-.heic-viewer-image {
+   the screen at scale 1 on any resolution. */
+.heic-lightbox-image {
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -84,16 +61,15 @@ img.heic-image {
     cursor: inherit;
 }
 
-/* Control bar: one flex row in the top-right, below any notch/status bar. */
-.heic-viewer-controls {
+/* Control bar: one row, top-right, below any notch/status bar. */
+.heic-lightbox-controls {
     position: absolute;
     top: calc(var(--safe-area-inset-top, 0px) + 12px);
     right: 12px;
-    z-index: 2;
     display: flex;
     gap: 8px;
 }
-.heic-viewer-button {
+.heic-lightbox-button {
     width: 44px; /* comfortable touch target */
     height: 44px;
     border-radius: 50%;
@@ -106,6 +82,6 @@ img.heic-image {
     align-items: center;
     justify-content: center;
 }
-.heic-viewer-button:hover {
+.heic-lightbox-button:hover {
     background-color: var(--background-modifier-active-hover);
 }

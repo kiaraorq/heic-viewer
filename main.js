@@ -72964,7 +72964,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      new HeicViewerModal(this.app, url, this.settings).open();
+      new HeicLightbox(url, this.settings.invertColors).open();
     }, { capture: true });
     img.addEventListener("error", () => {
       const msg = embed.createEl("div", {
@@ -73009,72 +73009,67 @@ var HeicSettingTab = class extends import_obsidian.PluginSettingTab {
     }
   }
 };
-var _HeicViewerModal = class extends import_obsidian.Modal {
-  constructor(app, imageUrl, settings) {
-    super(app);
-    this.imageUrl = imageUrl;
-    this.settings = settings;
-    this.tempBackground = null;
+var HeicLightbox = class {
+  constructor(imageUrl, invert) {
     // Transform state. Scale 1 = image fitted to screen.
     this.scale = 1;
     this.tx = 0;
     this.ty = 0;
     this.MIN_SCALE = 0.2;
     this.MAX_SCALE = 8;
-    // Active pointers (by pointerId) and gesture state.
+    // Momentary background for viewing transparent images: default (theme
+    // background) -> black -> white -> default. Never persisted.
+    this.background = "default";
+    // Gesture state (Pointer Events).
     this.pointers = /* @__PURE__ */ new Map();
     this.pinchStartDistance = 0;
     this.pinchStartScale = 1;
     this.panStart = null;
-    this.lastTapTime = 0;
-    this.downPos = { x: 0, y: 0 };
-  }
-  /* ---- Setup ------------------------------------------------------------- */
-  onOpen() {
-    const { contentEl, modalEl, containerEl } = this;
-    containerEl.addClass("heic-viewer-container");
-    modalEl.addClass("heic-viewer-modal");
-    contentEl.empty();
-    contentEl.addClass("heic-viewer-content");
+    this.onKeyDown = (event) => {
+      if (event.key === "Escape")
+        this.close();
+    };
+    this.root = activeDocument.createElement("div");
+    this.root.addClass("heic-lightbox");
     this.applyBackground();
-    this.imgEl = contentEl.createEl("img", { cls: "heic-viewer-image" });
-    this.imgEl.src = this.imageUrl;
+    this.imgEl = this.root.createEl("img", { cls: "heic-lightbox-image" });
+    this.imgEl.src = imageUrl;
     this.imgEl.draggable = false;
-    this.imgEl.classList.toggle("heic-invert", this.settings.invertColors);
-    this.buildControls(contentEl);
-    this.bindGestures(contentEl);
+    this.imgEl.classList.toggle("heic-invert", invert);
+    this.buildControls();
+    this.bindGestures();
   }
-  onClose() {
-    this.contentEl.empty();
+  open() {
+    activeDocument.body.appendChild(this.root);
+    activeDocument.addEventListener("keydown", this.onKeyDown);
   }
-  /* ---- Background ---------------------------------------------------------- */
+  close() {
+    activeDocument.removeEventListener("keydown", this.onKeyDown);
+    this.root.remove();
+  }
+  /* ---- Background ---------------------------------------------------- */
   applyBackground() {
-    var _a;
-    const mode = (_a = this.tempBackground) != null ? _a : this.settings.backgroundMode;
-    setBackground(this.contentEl, mode, this.settings.customBackgroundColor);
-    setBackground(this.modalEl, mode, this.settings.customBackgroundColor);
+    const color = this.background === "black" ? "#000000" : this.background === "white" ? "#ffffff" : "var(--background-primary)";
+    this.root.setCssProps({ "--heic-lightbox-bg": color });
   }
-  /* ---- Controls -------------------------------------------------------------- */
-  buildControls(container) {
-    const bar = container.createEl("div", { cls: "heic-viewer-controls" });
+  /* ---- Controls -------------------------------------------------------- */
+  buildControls() {
+    const bar = this.root.createEl("div", { cls: "heic-lightbox-controls" });
     bar.addEventListener("pointerdown", (event) => event.stopPropagation());
-    const bgBtn = this.addControl(bar, "palette", "Cycle temporary background");
-    bgBtn.addEventListener("click", () => {
-      const cycle = _HeicViewerModal.BG_CYCLE;
-      this.tempBackground = cycle[(cycle.indexOf(this.tempBackground) + 1) % cycle.length];
+    this.button(bar, "paintbrush", "Cycle background (theme / black / white)", () => {
+      this.background = this.background === "default" ? "black" : this.background === "black" ? "white" : "default";
       this.applyBackground();
     });
-    this.addControl(bar, "zoom-out", "Zoom out").addEventListener("click", () => this.setScale(this.scale / 1.5));
-    this.addControl(bar, "zoom-in", "Zoom in").addEventListener("click", () => this.setScale(this.scale * 1.5));
-    const closeBtn = this.addControl(bar, "x", "Close viewer");
-    closeBtn.addEventListener("click", () => this.close());
+    this.button(bar, "zoom-out", "Zoom out", () => this.setScale(this.scale / 1.5));
+    this.button(bar, "zoom-in", "Zoom in", () => this.setScale(this.scale * 1.5));
+    this.button(bar, "x", "Close", () => this.close());
   }
-  addControl(bar, icon, label) {
-    const btn = bar.createEl("button", { cls: "heic-viewer-button", attr: { "aria-label": label } });
+  button(bar, icon, label, onClick) {
+    const btn = bar.createEl("button", { cls: "heic-lightbox-button", attr: { "aria-label": label } });
     (0, import_obsidian.setIcon)(btn, icon);
-    return btn;
+    btn.addEventListener("click", onClick);
   }
-  /* ---- Zoom & pan --------------------------------------------------------------- */
+  /* ---- Zoom & pan --------------------------------------------------------- */
   setScale(value) {
     this.scale = Math.min(this.MAX_SCALE, Math.max(this.MIN_SCALE, value));
     if (this.scale <= 1) {
@@ -73092,16 +73087,14 @@ var _HeicViewerModal = class extends import_obsidian.Modal {
     const [a, b] = [...this.pointers.values()];
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
-  bindGestures(surface) {
+  bindGestures() {
+    const surface = this.root;
     surface.addEventListener("pointerdown", (event) => {
       surface.setPointerCapture(event.pointerId);
       this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      if (this.pointers.size === 1) {
-        this.downPos = { x: event.clientX, y: event.clientY };
-        if (this.scale > 1) {
-          this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
-          surface.addClass("heic-dragging");
-        }
+      if (this.pointers.size === 1 && this.scale > 1) {
+        this.panStart = { x: event.clientX, y: event.clientY, tx: this.tx, ty: this.ty };
+        surface.addClass("heic-dragging");
       } else if (this.pointers.size === 2) {
         this.panStart = null;
         this.pinchStartDistance = this.pointerDistance();
@@ -73128,16 +73121,8 @@ var _HeicViewerModal = class extends import_obsidian.Modal {
       if (this.pointers.size < 2)
         this.pinchStartDistance = 0;
       if (this.pointers.size === 0) {
-        surface.removeClass("heic-dragging");
-        const moved = Math.hypot(event.clientX - this.downPos.x, event.clientY - this.downPos.y) > 10;
-        const now = Date.now();
-        if (!moved && now - this.lastTapTime < 300) {
-          this.setScale(this.scale === 1 ? 3 : 1);
-          this.lastTapTime = 0;
-        } else if (!moved) {
-          this.lastTapTime = now;
-        }
         this.panStart = null;
+        surface.removeClass("heic-dragging");
       }
     };
     surface.addEventListener("pointerup", endPointer);
@@ -73148,5 +73133,3 @@ var _HeicViewerModal = class extends import_obsidian.Modal {
     }, { passive: false });
   }
 };
-var HeicViewerModal = _HeicViewerModal;
-HeicViewerModal.BG_CYCLE = [null, "black", "white"];

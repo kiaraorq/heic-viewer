@@ -1,6 +1,6 @@
 {
   "name": "heic-viewer",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "HEIC Viewer for Obsidian",
   "main": "main.js",
   "scripts": {

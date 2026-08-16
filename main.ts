@@ -39,6 +39,14 @@ function setBackground(el: HTMLElement, mode: BackgroundMode, custom: string) {
     el.setCssStyles({ background: color });
 }
 
+// Inverts an image's colors. Like setBackground, this pairs the styles.css
+// class with an inline style fallback so the feature still works when
+// styles.css is missing on a device.
+function setInvert(img: HTMLElement, invert: boolean) {
+    img.classList.toggle('heic-invert', invert);
+    img.setCssStyles({ filter: invert ? 'invert(1) hue-rotate(180deg)' : '' });
+}
+
 /* ========================================================================== *
  *  HEIC decoding                                                             *
  * ========================================================================== */
@@ -196,7 +204,7 @@ export default class HeicViewerPlugin extends Plugin {
     private showImage(embed: HTMLElement, url: string, src: string) {
         const img = embed.createEl('img', { cls: 'heic-own heic-image', attr: { alt: src } });
         img.src = url;
-        img.classList.toggle('heic-invert', this.settings.invertColors);
+        setInvert(img, this.settings.invertColors);
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
 
         // Open the lightbox on a tap. Detection uses pointer events instead
@@ -237,7 +245,8 @@ export default class HeicViewerPlugin extends Plugin {
 
     private refreshRenderedImages() {
         activeDocument.querySelectorAll('img.heic-image').forEach(img => {
-            img.classList.toggle('heic-invert', this.settings.invertColors);
+            if (!img.instanceOf(HTMLElement)) return;
+            setInvert(img, this.settings.invertColors);
             const embed = img.closest('.internal-embed');
             if (embed && embed.instanceOf(HTMLElement)) {
                 setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
@@ -358,7 +367,7 @@ class HeicLightbox {
         this.imgEl = this.root.createEl('img', { cls: 'heic-lightbox-image' });
         this.imgEl.src = imageUrl;
         this.imgEl.draggable = false;
-        this.imgEl.classList.toggle('heic-invert', invert);
+        setInvert(this.imgEl, invert);
         // width/height 100% + object-fit: contain guarantees the whole image
         // fits the screen at scale 1 on any resolution.
         this.imgEl.setCssStyles({

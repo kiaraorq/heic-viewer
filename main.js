@@ -72823,6 +72823,10 @@ function setBackground(el, mode, custom) {
   el.setCssProps({ "--heic-bg": color });
   el.setCssStyles({ background: color });
 }
+function setInvert(img, invert) {
+  img.classList.toggle("heic-invert", invert);
+  img.setCssStyles({ filter: invert ? "invert(1) hue-rotate(180deg)" : "" });
+}
 async function decodeHeicToPngBlob(buffer) {
   const images = new import_libheif_js.HeifDecoder().decode(buffer);
   if (!images || images.length === 0)
@@ -72960,7 +72964,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   showImage(embed, url, src) {
     const img = embed.createEl("img", { cls: "heic-own heic-image", attr: { alt: src } });
     img.src = url;
-    img.classList.toggle("heic-invert", this.settings.invertColors);
+    setInvert(img, this.settings.invertColors);
     setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
     let downX = 0, downY = 0, downTime = 0;
     img.addEventListener("pointerdown", (event) => {
@@ -72993,7 +72997,9 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   }
   refreshRenderedImages() {
     activeDocument.querySelectorAll("img.heic-image").forEach((img) => {
-      img.classList.toggle("heic-invert", this.settings.invertColors);
+      if (!img.instanceOf(HTMLElement))
+        return;
+      setInvert(img, this.settings.invertColors);
       const embed = img.closest(".internal-embed");
       if (embed && embed.instanceOf(HTMLElement)) {
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
@@ -73064,7 +73070,7 @@ var HeicLightbox = class {
     this.imgEl = this.root.createEl("img", { cls: "heic-lightbox-image" });
     this.imgEl.src = imageUrl;
     this.imgEl.draggable = false;
-    this.imgEl.classList.toggle("heic-invert", invert);
+    setInvert(this.imgEl, invert);
     this.imgEl.setCssStyles({
       width: "100%",
       height: "100%",

@@ -1,33 +1,12 @@
-/* ==== Inline images ==== */
-
-img.heic-image {
-    max-width: 100%;
-    border-radius: var(--radius-m);
-    cursor: zoom-in;
-}
-
-.heic-invert {
-    filter: invert(1) hue-rotate(180deg);
-}
-
-/* Deliberate background behind image transparency on the embed.
-   Color comes from the --heic-bg variable set by the plugin. !important
-   because some themes set !important backgrounds on embeds directly. */
+/* Everything the plugin needs to FUNCTION is applied inline from main.ts, so
+   the plugin works correctly even if this file is missing on a device.
+   
+   This rule is the one exception that cannot be done inline: some themes set
+   an !important background on embeds, and only another !important rule can
+   override that. Inline styles lose to !important. The color itself comes
+   from the --heic-bg variable, which main.ts sets on the element. */
 .heic-bg {
     background: var(--heic-bg, transparent) !important;
-    border: none;
-    box-shadow: none;
-}
-
-/* Lazy-load / conversion placeholder. */
-.heic-placeholder {
-    padding: 2em;
-    text-align: center;
-    border: 1px dashed var(--background-modifier-border);
-    border-radius: var(--radius-m);
-    color: var(--text-muted);
-}
-.heic-error {
-    color: var(--text-error);
-    border: 1px solid var(--text-error);
+    border: none !important;
+    box-shadow: none !important;
 }

@@ -29,14 +29,70 @@ function backgroundColorFor(mode: BackgroundMode, custom: string): string {
 }
 
 // Gives an element a deliberate background behind image transparency.
-// Applied two ways: the .heic-bg rule in styles.css (whose !important wins
-// against themes that use !important on embeds), and a plain inline style
-// as a fallback so it still works if styles.css is missing on a device.
+// Applied two ways: inline (works without styles.css) and via the .heic-bg
+// class, whose !important is the only thing that can beat themes that set
+// !important backgrounds on embeds -- inline styles can't override those.
 function setBackground(el: HTMLElement, mode: BackgroundMode, custom: string) {
     const color = backgroundColorFor(mode, custom);
     el.classList.add('heic-bg');
     el.setCssProps({ '--heic-bg': color });
-    el.setCssStyles({ background: color });
+    el.setCssStyles({ background: color, border: 'none', boxShadow: 'none' });
+}
+
+// Applies the invert filter inline rather than via a stylesheet class, so it
+// works even if styles.css is missing on a device -- the failure mode that
+// silently disabled it for users whose install lacked the stylesheet.
+function setInvert(img: HTMLElement, invert: boolean) {
+    img.setCssStyles({ filter: invert ? 'invert(1) hue-rotate(180deg)' : '' });
+}
+
+// Styles a status placeholder (loading, converting, or error) inline so it
+// stays legible without styles.css.
+function stylePlaceholder(el: HTMLElement, isError = false) {
+    el.setCssStyles({
+        padding: '2em',
+        textAlign: 'center',
+        borderRadius: 'var(--radius-m)',
+        color: isError ? 'var(--text-error)' : 'var(--text-muted)',
+        border: isError
+            ? '1px solid var(--text-error)'
+            : '1px dashed var(--background-modifier-border)'
+    });
+}
+
+// Reads the size from Obsidian's ![[file.heic|300]] or |300x200 syntax.
+//
+// Obsidian documents this for images it renders itself, but HEIC files hit
+// the "unsupported file type" path, and it isn't documented where (or
+// whether) the size lands on that element. So every plausible location is
+// checked rather than betting on one: the width/height attributes Obsidian
+// sets for normal images, then the alt attribute, then src -- both of which
+// can carry the raw "name|300" text depending on the render path.
+function readEmbedSize(embed: HTMLElement): { width?: number; height?: number } {
+    const widthAttr = Number(embed.getAttribute('width'));
+    const heightAttr = Number(embed.getAttribute('height'));
+    if (widthAttr > 0 || heightAttr > 0) {
+        return {
+            width: widthAttr > 0 ? widthAttr : undefined,
+            height: heightAttr > 0 ? heightAttr : undefined
+        };
+    }
+
+    // Fall back to parsing a trailing "|300" or "|300x200" out of the text
+    // attributes. Obsidian may also render the separator as " > ".
+    for (const attr of ['alt', 'src']) {
+        const value = embed.getAttribute(attr);
+        if (!value) continue;
+        const match = /(?:\||>\s*)(\d+)(?:\s*[x×]\s*(\d+))?\s*$/.exec(value);
+        if (match) {
+            return {
+                width: Number(match[1]),
+                height: match[2] ? Number(match[2]) : undefined
+            };
+        }
+    }
+
+    return {};
 }
 
 /* ========================================================================== *
@@ -90,6 +146,7 @@ export default class HeicViewerPlugin extends Plugin {
         await this.loadSettings();
         this.addSettingTab(new HeicSettingTab(this.app, this));
         this.registerInterval(window.setInterval(() => this.scan(), 300));
+
     }
 
     onunload() {
@@ -113,13 +170,25 @@ export default class HeicViewerPlugin extends Plugin {
     private scan() {
         activeDocument.querySelectorAll('.internal-embed').forEach(el => {
             if (!el.instanceOf(HTMLElement)) return;
-            const src = el.getAttribute('src');
-            if (!src) return;
+            const rawSrc = el.getAttribute('src');
+            if (!rawSrc) return;
+
+            // src may carry a size suffix (e.g. "photo.heic|300"). Strip it
+            // before the extension check, or the embed is skipped entirely,
+            // and before the link lookup, or the file isn't found.
+            const src = rawSrc.split('|')[0].trim();
 
             const lower = src.toLowerCase();
             if (!lower.endsWith('.heic') && !lower.endsWith('.heif')) return;
 
             void this.ensureRendered(el, src);
+
+            // Re-apply the size every pass: when the |300 spec is edited,
+            // Obsidian updates the existing embed element in place rather
+            // than making a new one, so without this the change wouldn't
+            // show until the note was closed and reopened.
+            const img = el.querySelector('img.heic-image');
+            if (img && img.instanceOf(HTMLElement)) this.applySize(el, img);
 
             // Obsidian (mobile especially) re-adds its "unsupported file" link
             // inside the embed at arbitrary times; keep everything that isn't
@@ -130,6 +199,23 @@ export default class HeicViewerPlugin extends Plugin {
                 if (child.getCssPropertyValue('display') === 'none') return;
                 child.setCssStyles({ display: 'none' });
             });
+        });
+    }
+
+    // Sizes the image per ![[file.heic|300]] / |300x200. Skips the DOM write
+    // when nothing changed, so this is cheap to call on every scan tick.
+    private applySize(embed: HTMLElement, img: HTMLElement) {
+        const { width, height } = readEmbedSize(embed);
+        const signature = `${width ?? ''}x${height ?? ''}`;
+        if (img.getAttribute('data-heic-size') === signature) return;
+        img.setAttribute('data-heic-size', signature);
+
+        // An explicit dimension has to beat maxWidth: 100%; when only one is
+        // given the other stays auto so the aspect ratio is preserved.
+        img.setCssStyles({
+            width: width ? `${width}px` : 'auto',
+            height: height ? `${height}px` : 'auto',
+            maxWidth: '100%'
         });
     }
 
@@ -153,6 +239,7 @@ export default class HeicViewerPlugin extends Plugin {
             text: 'Scroll to load HEIC…',
             cls: 'heic-own heic-placeholder'
         });
+        stylePlaceholder(placeholder);
         const observer = new IntersectionObserver((entries, obs) => {
             entries.forEach(entry => {
                 if (!entry.isIntersecting) return;
@@ -174,6 +261,7 @@ export default class HeicViewerPlugin extends Plugin {
         } catch (error: unknown) {
             placeholder.setText(`Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`);
             placeholder.addClass('heic-error');
+            stylePlaceholder(placeholder, true);
         }
     }
 
@@ -196,7 +284,18 @@ export default class HeicViewerPlugin extends Plugin {
     private showImage(embed: HTMLElement, url: string, src: string) {
         const img = embed.createEl('img', { cls: 'heic-own heic-image', attr: { alt: src } });
         img.src = url;
-        img.classList.toggle('heic-invert', this.settings.invertColors);
+        // max-width is functional, not cosmetic: without it a 12MP photo
+        // renders at its full pixel width and breaks the note layout.
+        img.setCssStyles({
+            maxWidth: '100%',
+            borderRadius: 'var(--radius-m)',
+            cursor: 'zoom-in'
+        });
+
+        // Honor ![[file.heic|300]] / |300x200 sizing.
+        this.applySize(embed, img);
+
+        setInvert(img, this.settings.invertColors);
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
 
         // Open the lightbox on a tap. Detection uses pointer events instead
@@ -216,7 +315,7 @@ export default class HeicViewerPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
-            new HeicLightbox(url, this.settings.invertColors).open();
+            new HeicLightbox(url, this.settings).open();
         }, { capture: true });
         img.addEventListener('click', event => {
             event.preventDefault();
@@ -231,13 +330,14 @@ export default class HeicViewerPlugin extends Plugin {
                 text: `Couldn't display ${src}.`,
                 cls: 'heic-own heic-placeholder heic-error'
             });
+            stylePlaceholder(msg, true);
             img.replaceWith(msg);
         });
     }
 
     private refreshRenderedImages() {
         activeDocument.querySelectorAll('img.heic-image').forEach(img => {
-            img.classList.toggle('heic-invert', this.settings.invertColors);
+            if (img.instanceOf(HTMLElement)) setInvert(img, this.settings.invertColors);
             const embed = img.closest('.internal-embed');
             if (embed && embed.instanceOf(HTMLElement)) {
                 setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
@@ -322,9 +422,10 @@ class HeicLightbox {
     private readonly MIN_SCALE = 0.2;
     private readonly MAX_SCALE = 8;
 
-    // Momentary background for viewing transparent images: default (theme
-    // background) -> black -> white -> default. Never persisted.
+    // Momentary overrides for this viewing session only; never persisted.
+    // Background: configured -> black -> white -> configured.
     private background: LightboxBackground = 'default';
+    private invert = false;
 
     // Gesture state (Pointer Events).
     private pointers = new Map<number, { x: number; y: number }>();
@@ -336,7 +437,11 @@ class HeicLightbox {
         if (event.key === 'Escape') this.close();
     };
 
-    constructor(imageUrl: string, invert: boolean) {
+    constructor(imageUrl: string, private settings: HeicViewerSettings) {
+        // Start from the configured settings; both can be changed for this
+        // viewing session via the buttons, without touching saved settings.
+        this.invert = settings.invertColors;
+
         // Every critical style is set from JS so the lightbox works even if
         // styles.css never made it onto the device (a repeated mobile failure
         // mode). The classes remain for optional cosmetic theming only.
@@ -358,7 +463,7 @@ class HeicLightbox {
         this.imgEl = this.root.createEl('img', { cls: 'heic-lightbox-image' });
         this.imgEl.src = imageUrl;
         this.imgEl.draggable = false;
-        this.imgEl.classList.toggle('heic-invert', invert);
+        setInvert(this.imgEl, this.invert);
         // width/height 100% + object-fit: contain guarantees the whole image
         // fits the screen at scale 1 on any resolution.
         this.imgEl.setCssStyles({
@@ -387,10 +492,19 @@ class HeicLightbox {
     /* ---- Background ---------------------------------------------------- */
 
     private applyBackground() {
-        const color =
-            this.background === 'black' ? '#000000' :
-            this.background === 'white' ? '#ffffff' :
-            'var(--background-primary)';
+        // 'default' means "whatever the plugin settings say" -- including a
+        // custom color -- not the theme color. Transparent falls back to the
+        // theme background so the note text behind doesn't show through.
+        let color: string;
+        if (this.background === 'black') {
+            color = '#000000';
+        } else if (this.background === 'white') {
+            color = '#ffffff';
+        } else if (this.settings.backgroundMode === 'transparent') {
+            color = 'var(--background-primary)';
+        } else {
+            color = backgroundColorFor(this.settings.backgroundMode, this.settings.customBackgroundColor);
+        }
         this.root.setCssStyles({ background: color });
     }
 
@@ -408,7 +522,11 @@ class HeicLightbox {
         // Taps on the control bar must never start an image gesture.
         bar.addEventListener('pointerdown', event => event.stopPropagation());
 
-        this.button(bar, 'paintbrush', 'Cycle background (theme / black / white)', () => {
+        this.button(bar, 'contrast', 'Invert image colors', () => {
+            this.invert = !this.invert;
+            setInvert(this.imgEl, this.invert);
+        });
+        this.button(bar, 'paintbrush', 'Cycle background (setting / black / white)', () => {
             this.background =
                 this.background === 'default' ? 'black' :
                 this.background === 'black' ? 'white' : 'default';

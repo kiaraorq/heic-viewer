@@ -72821,7 +72821,42 @@ function setBackground(el, mode, custom) {
   const color = backgroundColorFor(mode, custom);
   el.classList.add("heic-bg");
   el.setCssProps({ "--heic-bg": color });
-  el.setCssStyles({ background: color });
+  el.setCssStyles({ background: color, border: "none", boxShadow: "none" });
+}
+function setInvert(img, invert) {
+  img.setCssStyles({ filter: invert ? "invert(1) hue-rotate(180deg)" : "" });
+}
+function stylePlaceholder(el, isError = false) {
+  el.setCssStyles({
+    padding: "2em",
+    textAlign: "center",
+    borderRadius: "var(--radius-m)",
+    color: isError ? "var(--text-error)" : "var(--text-muted)",
+    border: isError ? "1px solid var(--text-error)" : "1px dashed var(--background-modifier-border)"
+  });
+}
+function readEmbedSize(embed) {
+  const widthAttr = Number(embed.getAttribute("width"));
+  const heightAttr = Number(embed.getAttribute("height"));
+  if (widthAttr > 0 || heightAttr > 0) {
+    return {
+      width: widthAttr > 0 ? widthAttr : void 0,
+      height: heightAttr > 0 ? heightAttr : void 0
+    };
+  }
+  for (const attr of ["alt", "src"]) {
+    const value = embed.getAttribute(attr);
+    if (!value)
+      continue;
+    const match = /(?:\||>\s*)(\d+)(?:\s*[x×]\s*(\d+))?\s*$/.exec(value);
+    if (match) {
+      return {
+        width: Number(match[1]),
+        height: match[2] ? Number(match[2]) : void 0
+      };
+    }
+  }
+  return {};
 }
 async function decodeHeicToPngBlob(buffer) {
   const images = new import_libheif_js.HeifDecoder().decode(buffer);
@@ -72883,13 +72918,17 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     activeDocument.querySelectorAll(".internal-embed").forEach((el) => {
       if (!el.instanceOf(HTMLElement))
         return;
-      const src = el.getAttribute("src");
-      if (!src)
+      const rawSrc = el.getAttribute("src");
+      if (!rawSrc)
         return;
+      const src = rawSrc.split("|")[0].trim();
       const lower = src.toLowerCase();
       if (!lower.endsWith(".heic") && !lower.endsWith(".heif"))
         return;
       void this.ensureRendered(el, src);
+      const img = el.querySelector("img.heic-image");
+      if (img && img.instanceOf(HTMLElement))
+        this.applySize(el, img);
       el.childNodes.forEach((child) => {
         if (!child.instanceOf(HTMLElement))
           return;
@@ -72899,6 +72938,20 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
           return;
         child.setCssStyles({ display: "none" });
       });
+    });
+  }
+  // Sizes the image per ![[file.heic|300]] / |300x200. Skips the DOM write
+  // when nothing changed, so this is cheap to call on every scan tick.
+  applySize(embed, img) {
+    const { width, height } = readEmbedSize(embed);
+    const signature = `${width != null ? width : ""}x${height != null ? height : ""}`;
+    if (img.getAttribute("data-heic-size") === signature)
+      return;
+    img.setAttribute("data-heic-size", signature);
+    img.setCssStyles({
+      width: width ? `${width}px` : "auto",
+      height: height ? `${height}px` : "auto",
+      maxWidth: "100%"
     });
   }
   async ensureRendered(embed, src) {
@@ -72919,6 +72972,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       text: "Scroll to load HEIC\u2026",
       cls: "heic-own heic-placeholder"
     });
+    stylePlaceholder(placeholder);
     const observer = new IntersectionObserver((entries, obs) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting)
@@ -72940,6 +72994,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     } catch (error) {
       placeholder.setText(`Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`);
       placeholder.addClass("heic-error");
+      stylePlaceholder(placeholder, true);
     }
   }
   remember(path, url) {
@@ -72960,7 +73015,13 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   showImage(embed, url, src) {
     const img = embed.createEl("img", { cls: "heic-own heic-image", attr: { alt: src } });
     img.src = url;
-    img.classList.toggle("heic-invert", this.settings.invertColors);
+    img.setCssStyles({
+      maxWidth: "100%",
+      borderRadius: "var(--radius-m)",
+      cursor: "zoom-in"
+    });
+    this.applySize(embed, img);
+    setInvert(img, this.settings.invertColors);
     setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
     let downX = 0, downY = 0, downTime = 0;
     img.addEventListener("pointerdown", (event) => {
@@ -72976,7 +73037,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      new HeicLightbox(url, this.settings.invertColors).open();
+      new HeicLightbox(url, this.settings).open();
     }, { capture: true });
     img.addEventListener("click", (event) => {
       event.preventDefault();
@@ -72988,12 +73049,14 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
         text: `Couldn't display ${src}.`,
         cls: "heic-own heic-placeholder heic-error"
       });
+      stylePlaceholder(msg, true);
       img.replaceWith(msg);
     });
   }
   refreshRenderedImages() {
     activeDocument.querySelectorAll("img.heic-image").forEach((img) => {
-      img.classList.toggle("heic-invert", this.settings.invertColors);
+      if (img.instanceOf(HTMLElement))
+        setInvert(img, this.settings.invertColors);
       const embed = img.closest(".internal-embed");
       if (embed && embed.instanceOf(HTMLElement)) {
         setBackground(embed, this.settings.backgroundMode, this.settings.customBackgroundColor);
@@ -73027,16 +73090,18 @@ var HeicSettingTab = class extends import_obsidian.PluginSettingTab {
   }
 };
 var HeicLightbox = class {
-  constructor(imageUrl, invert) {
+  constructor(imageUrl, settings) {
+    this.settings = settings;
     // Transform state. Scale 1 = image fitted to screen.
     this.scale = 1;
     this.tx = 0;
     this.ty = 0;
     this.MIN_SCALE = 0.2;
     this.MAX_SCALE = 8;
-    // Momentary background for viewing transparent images: default (theme
-    // background) -> black -> white -> default. Never persisted.
+    // Momentary overrides for this viewing session only; never persisted.
+    // Background: configured -> black -> white -> configured.
     this.background = "default";
+    this.invert = false;
     // Gesture state (Pointer Events).
     this.pointers = /* @__PURE__ */ new Map();
     this.pinchStartDistance = 0;
@@ -73046,6 +73111,7 @@ var HeicLightbox = class {
       if (event.key === "Escape")
         this.close();
     };
+    this.invert = settings.invertColors;
     this.root = activeDocument.createElement("div");
     this.root.addClass("heic-lightbox");
     this.root.setCssStyles({
@@ -73064,7 +73130,7 @@ var HeicLightbox = class {
     this.imgEl = this.root.createEl("img", { cls: "heic-lightbox-image" });
     this.imgEl.src = imageUrl;
     this.imgEl.draggable = false;
-    this.imgEl.classList.toggle("heic-invert", invert);
+    setInvert(this.imgEl, this.invert);
     this.imgEl.setCssStyles({
       width: "100%",
       height: "100%",
@@ -73086,7 +73152,16 @@ var HeicLightbox = class {
   }
   /* ---- Background ---------------------------------------------------- */
   applyBackground() {
-    const color = this.background === "black" ? "#000000" : this.background === "white" ? "#ffffff" : "var(--background-primary)";
+    let color;
+    if (this.background === "black") {
+      color = "#000000";
+    } else if (this.background === "white") {
+      color = "#ffffff";
+    } else if (this.settings.backgroundMode === "transparent") {
+      color = "var(--background-primary)";
+    } else {
+      color = backgroundColorFor(this.settings.backgroundMode, this.settings.customBackgroundColor);
+    }
     this.root.setCssStyles({ background: color });
   }
   /* ---- Controls -------------------------------------------------------- */
@@ -73101,7 +73176,11 @@ var HeicLightbox = class {
       gap: "8px"
     });
     bar.addEventListener("pointerdown", (event) => event.stopPropagation());
-    this.button(bar, "paintbrush", "Cycle background (theme / black / white)", () => {
+    this.button(bar, "contrast", "Invert image colors", () => {
+      this.invert = !this.invert;
+      setInvert(this.imgEl, this.invert);
+    });
+    this.button(bar, "paintbrush", "Cycle background (setting / black / white)", () => {
       this.background = this.background === "default" ? "black" : this.background === "black" ? "white" : "default";
       this.applyBackground();
     });

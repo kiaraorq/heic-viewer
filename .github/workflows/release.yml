@@ -31,7 +31,9 @@ jobs:
       - name: Generate Artifact Attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: 'main.js'
+          subject-path: |
+            main.js
+            styles.css
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
@@ -39,3 +41,4 @@ jobs:
           files: |
             main.js
             manifest.json
+            styles.css

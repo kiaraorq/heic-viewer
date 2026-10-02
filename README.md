@@ -2,9 +2,8 @@
 
 <p align="center"><b>☕ Enjoying HEIC Viewer? <a href="https://ko-fi.com/L7G522XOY8">Support its development on Ko-fi!</a></b></p>
 
-<p align="center">
-  <a href="https://ko-fi.com/L7G522XOY8"><img src="https://raw.githubusercontent.com/kiaraorq/heic-viewer/main/kofi-banner.png" alt="Buy me a coffee on Ko-fi! Your donations help me keep developing new tools" width="520"></a>
-</p>
+[<img src="https://raw.githubusercontent.com/kiaraorq/heic-viewer/main/banner.png" alt="Banner" width="520">](https://ko-fi.com/L7G522XOY8)
+
 <p align="center">
   <a href="https://ko-fi.com/L7G522XOY8"><img src="https://raw.githubusercontent.com/kiaraorq/heic-viewer/main/support_me_on_kofi_beige.png" alt="Support me on Ko-fi" height="50"></a>
 </p>

@@ -72858,6 +72858,15 @@ function readEmbedSize(embed) {
   }
   return {};
 }
+function isJpeg(buffer) {
+  const bytes = new Uint8Array(buffer, 0, Math.min(3, buffer.byteLength));
+  return bytes.length === 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+}
+async function toDisplayableBlob(buffer) {
+  if (isJpeg(buffer))
+    return new Blob([buffer], { type: "image/jpeg" });
+  return decodeHeicToPngBlob(buffer);
+}
 async function decodeHeicToPngBlob(buffer) {
   const images = new import_libheif_js.HeifDecoder().decode(buffer);
   if (!images || images.length === 0)
@@ -72899,6 +72908,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
     await this.loadSettings();
     this.addSettingTab(new HeicSettingTab(this.app, this));
     this.registerInterval(window.setInterval(() => this.scan(), 300));
+    this.registerMarkdownPostProcessor((el, ctx) => this.processForExport(el, ctx));
   }
   onunload() {
     this.cache.forEach((url) => URL.revokeObjectURL(url));
@@ -72987,7 +72997,7 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
   async convert(embed, file, src, placeholder) {
     try {
       const buffer = await this.app.vault.readBinary(file);
-      const url = URL.createObjectURL(await decodeHeicToPngBlob(buffer));
+      const url = URL.createObjectURL(await toDisplayableBlob(buffer));
       this.remember(file.path, url);
       placeholder.remove();
       this.showImage(embed, url, src);
@@ -72995,6 +73005,51 @@ var HeicViewerPlugin = class extends import_obsidian.Plugin {
       placeholder.setText(`Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`);
       placeholder.addClass("heic-error");
       stylePlaceholder(placeholder, true);
+    }
+  }
+  /* ---- PDF export ---------------------------------------------------------- */
+  // Export to PDF renders the note into a ".print" container in a hidden
+  // popup window, so scan() (which watches activeDocument) never sees it
+  // and the lazy IntersectionObserver never fires. Export does await
+  // promises returned by post-processors, and it runs them before loading
+  // embeds, skipping any already marked .is-loaded. So convert eagerly
+  // here and resolve once every image has loaded.
+  processForExport(el, ctx) {
+    if (!el.closest(".print"))
+      return;
+    const jobs = [];
+    el.findAll(".internal-embed:not(.is-loaded)").forEach((embed) => {
+      const rawSrc = embed.getAttribute("src");
+      if (!rawSrc)
+        return;
+      const src = rawSrc.split("|")[0].trim();
+      const lower = src.toLowerCase();
+      if (!lower.endsWith(".heic") && !lower.endsWith(".heif"))
+        return;
+      const file = this.app.metadataCache.getFirstLinkpathDest(src, ctx.sourcePath);
+      if (!(file instanceof import_obsidian.TFile))
+        return;
+      embed.addClass("is-loaded");
+      embed.setAttribute("data-heic", "done");
+      jobs.push(this.renderForExport(embed, file, src));
+    });
+    if (jobs.length > 0)
+      return Promise.all(jobs).then(() => void 0);
+  }
+  async renderForExport(embed, file, src) {
+    try {
+      const blob = await toDisplayableBlob(await this.app.vault.readBinary(file));
+      const url = embed.win.URL.createObjectURL(blob);
+      this.showImage(embed, url, src);
+      const img = embed.find("img.heic-image");
+      if (img && img.instanceOf(HTMLImageElement))
+        await img.decode().catch(() => void 0);
+    } catch (error) {
+      const msg = embed.createEl("div", {
+        text: `Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`,
+        cls: "heic-own heic-placeholder heic-error"
+      });
+      stylePlaceholder(msg, true);
     }
   }
   remember(path, url) {

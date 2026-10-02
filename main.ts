@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, setIcon } from 'obsidian';
+import { App, MarkdownPostProcessorContext, Plugin, PluginSettingTab, Setting, TFile, setIcon } from 'obsidian';
 import { HeifDecoder, HeifImage } from 'libheif-js';
 
 /* ========================================================================== *
@@ -99,6 +99,21 @@ function readEmbedSize(embed: HTMLElement): { width?: number; height?: number } 
  *  HEIC decoding                                                             *
  * ========================================================================== */
 
+// Some exporters (Google Photos, Samsung share sheets) convert photos to JPEG
+// but keep the .heic extension. libheif rejects those with "no image found",
+// so sniff the JPEG SOI marker (FF D8 FF) and let the browser show it as-is.
+function isJpeg(buffer: ArrayBuffer): boolean {
+    const bytes = new Uint8Array(buffer, 0, Math.min(3, buffer.byteLength));
+    return bytes.length === 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
+// Returns a blob the browser can display: the original bytes for mislabelled
+// JPEGs, otherwise a PNG decoded from HEIC/HEIF.
+async function toDisplayableBlob(buffer: ArrayBuffer): Promise<Blob> {
+    if (isJpeg(buffer)) return new Blob([buffer], { type: 'image/jpeg' });
+    return decodeHeicToPngBlob(buffer);
+}
+
 // Decodes HEIC/HEIF bytes into a PNG blob, preserving the alpha channel.
 async function decodeHeicToPngBlob(buffer: ArrayBuffer): Promise<Blob> {
     const images = new HeifDecoder().decode(buffer);
@@ -146,7 +161,7 @@ export default class HeicViewerPlugin extends Plugin {
         await this.loadSettings();
         this.addSettingTab(new HeicSettingTab(this.app, this));
         this.registerInterval(window.setInterval(() => this.scan(), 300));
-
+        this.registerMarkdownPostProcessor((el, ctx) => this.processForExport(el, ctx));
     }
 
     onunload() {
@@ -254,7 +269,7 @@ export default class HeicViewerPlugin extends Plugin {
     private async convert(embed: HTMLElement, file: TFile, src: string, placeholder: HTMLElement) {
         try {
             const buffer = await this.app.vault.readBinary(file);
-            const url = URL.createObjectURL(await decodeHeicToPngBlob(buffer));
+            const url = URL.createObjectURL(await toDisplayableBlob(buffer));
             this.remember(file.path, url);
             placeholder.remove();
             this.showImage(embed, url, src);
@@ -262,6 +277,54 @@ export default class HeicViewerPlugin extends Plugin {
             placeholder.setText(`Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`);
             placeholder.addClass('heic-error');
             stylePlaceholder(placeholder, true);
+        }
+    }
+
+    /* ---- PDF export ---------------------------------------------------------- */
+
+    // Export to PDF renders the note into a ".print" container in a hidden
+    // popup window, so scan() (which watches activeDocument) never sees it
+    // and the lazy IntersectionObserver never fires. Export does await
+    // promises returned by post-processors, and it runs them before loading
+    // embeds, skipping any already marked .is-loaded. So convert eagerly
+    // here and resolve once every image has loaded.
+    private processForExport(el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<void> | void {
+        if (!el.closest('.print')) return;
+
+        const jobs: Promise<void>[] = [];
+        el.findAll('.internal-embed:not(.is-loaded)').forEach(embed => {
+            const rawSrc = embed.getAttribute('src');
+            if (!rawSrc) return;
+            const src = rawSrc.split('|')[0].trim();
+            const lower = src.toLowerCase();
+            if (!lower.endsWith('.heic') && !lower.endsWith('.heif')) return;
+
+            const file = this.app.metadataCache.getFirstLinkpathDest(src, ctx.sourcePath);
+            if (!(file instanceof TFile)) return;
+
+            embed.addClass('is-loaded');
+            embed.setAttribute('data-heic', 'done');
+            jobs.push(this.renderForExport(embed, file, src));
+        });
+
+        if (jobs.length > 0) return Promise.all(jobs).then(() => undefined);
+    }
+
+    private async renderForExport(embed: HTMLElement, file: TFile, src: string) {
+        try {
+            const blob = await toDisplayableBlob(await this.app.vault.readBinary(file));
+            // Create the URL in the export window's own realm; it is released
+            // when Obsidian closes that window after printing.
+            const url = (embed.win as Window & typeof globalThis).URL.createObjectURL(blob);
+            this.showImage(embed, url, src);
+            const img = embed.find('img.heic-image');
+            if (img && img.instanceOf(HTMLImageElement)) await img.decode().catch(() => undefined);
+        } catch (error: unknown) {
+            const msg = embed.createEl('div', {
+                text: `Failed to convert ${src}: ${error instanceof Error ? error.message : String(error)}`,
+                cls: 'heic-own heic-placeholder heic-error'
+            });
+            stylePlaceholder(msg, true);
         }
     }
 

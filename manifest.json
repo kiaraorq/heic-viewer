@@ -5,5 +5,6 @@
   "minAppVersion": "1.2.0",
   "description": "Allows viewing of .heic and .heif images by converting them on the fly.",
   "author": "Kiara Orquera",
+  "fundingUrl": "https://ko-fi.com/L7G522XOY8",
   "isDesktopOnly": false
 }

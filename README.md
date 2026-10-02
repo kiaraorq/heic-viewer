@@ -1,5 +1,12 @@
 # HEIC Viewer for Obsidian
 
+<p align="center">
+  <a href="https://ko-fi.com/L7G522XOY8"><img src="https://raw.githubusercontent.com/kiaraorq/heic-viewer/main/kofi-banner.png" alt="Buy me a coffee on Ko-fi! Your donations help me keep developing new tools" width="520"></a>
+</p>
+<p align="center">
+  <a href="https://ko-fi.com/L7G522XOY8"><img src="https://raw.githubusercontent.com/kiaraorq/heic-viewer/main/support_me_on_kofi_beige.png" alt="Support me on Ko-fi" height="50"></a>
+</p>
+
 An Obsidian plugin that allows you to view `.heic` and `.heif` images directly inside your notes — on desktop, tablet, and mobile.
 
 Obsidian does not natively support HEIC images due to Chromium licensing restrictions. This plugin solves that by seamlessly converting HEIC files to PNGs on the fly using the `libheif-js` library (powered by WebAssembly), allowing you to drag and drop photos straight from your iPhone or camera into your vault.
@@ -29,6 +36,3 @@ When you scroll to the image, the plugin will briefly display a "Converting HEIC
 ## Limitations
 
 Because HEIC files use heavy video-compression algorithms, decoding them via WebAssembly takes a moment. Large photos (12MP+) might take a second or two to render when scrolling into view.
-
-[![Support me on Ko-fi](kofi-button-cute.png)](https://ko-fi.com/L7G522XOY8)
-[![Support me on Ko-fi](support_me_on_kofi_beige.png)](https://ko-fi.com/L7G522XOY8)

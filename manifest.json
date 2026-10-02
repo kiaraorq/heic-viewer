@@ -1,7 +1,7 @@
 {
   "id": "heic-viewer",
   "name": "HEIC Viewer",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "minAppVersion": "1.2.1",
   "description": "Allows viewing of .heic and .heif images by converting them on the fly.",
   "author": "Kiara Orquera",
